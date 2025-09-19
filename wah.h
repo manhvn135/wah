@@ -142,6 +142,26 @@ static inline uint64_t wah_read_u64_le(const uint8_t *ptr) {
            ((uint64_t)ptr[7] << 56);
 }
 
+// Helper to write a uint32_t to a byte array in little-endian format
+static inline void wah_write_u32_le(uint8_t *ptr, uint32_t val) {
+    ptr[0] = (uint8_t)(val >> 0);
+    ptr[1] = (uint8_t)(val >> 8);
+    ptr[2] = (uint8_t)(val >> 16);
+    ptr[3] = (uint8_t)(val >> 24);
+}
+
+// Helper to write a uint64_t to a byte array in little-endian format
+static inline void wah_write_u64_le(uint8_t *ptr, uint64_t val) {
+    ptr[0] = (uint8_t)(val >> 0);
+    ptr[1] = (uint8_t)(val >> 8);
+    ptr[2] = (uint8_t)(val >> 16);
+    ptr[3] = (uint8_t)(val >> 24);
+    ptr[4] = (uint8_t)(val >> 32);
+    ptr[5] = (uint8_t)(val >> 40);
+    ptr[6] = (uint8_t)(val >> 48);
+    ptr[7] = (uint8_t)(val >> 56);
+}
+
 // Helper to read a float from a byte array in little-endian format
 static inline float wah_read_f32_le(const uint8_t *ptr) {
     union {
@@ -573,6 +593,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             uint32_t align, offset;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &align));
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &offset));
+            if (align > 2) return WAH_ERROR_VALIDATION_FAILED; // i32 natural alignment is 4 (2^2)
             wah_val_type_t addr_type;
             WAH_CHECK(wah_validation_pop_type(vctx, &addr_type));
             if (addr_type != WAH_VAL_TYPE_I32) return WAH_ERROR_VALIDATION_FAILED;
@@ -582,6 +603,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             uint32_t align, offset;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &align));
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &offset));
+            if (align > 2) return WAH_ERROR_VALIDATION_FAILED; // i32 natural alignment is 4 (2^2)
             wah_val_type_t val_type, addr_type;
             WAH_CHECK(wah_validation_pop_type(vctx, &val_type));
             WAH_CHECK(wah_validation_pop_type(vctx, &addr_type));
@@ -1015,10 +1037,10 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
             case WAH_OP_I32_LOAD:
             case WAH_OP_I32_STORE: {
                 uint32_t align_flags;
-                WAH_CHECK(wah_decode_uleb128(&ptr, end, &align_flags)); // align flags
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &align_flags)); // align flags (read but not stored)
                 uint32_t offset;
                 WAH_CHECK(wah_decode_uleb128(&ptr, end, &offset)); // offset
-                u32_arg_count += 2;
+                u32_arg_count += 1; // Only store offset
                 break;
             }
             case WAH_OP_MEMORY_SIZE:
@@ -1165,10 +1187,9 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
             case WAH_OP_I32_LOAD:
             case WAH_OP_I32_STORE: {
                 uint32_t align_flags;
-                WAH_CHECK(wah_decode_uleb128(&ptr, end, &align_flags)); // align flags
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &align_flags)); // align flags (read but not stored)
                 uint32_t offset;
                 WAH_CHECK(wah_decode_uleb128(&ptr, end, &offset)); // offset
-                parsed_code->u32_args[parsed_code->u32_arg_count++] = align_flags;
                 parsed_code->u32_args[parsed_code->u32_arg_count++] = offset;
                 break;
             }
@@ -1577,7 +1598,6 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 #undef OPS
 
             case WAH_OP_I32_LOAD: {
-                uint32_t align = *u32_arg_ptr++; // Not used for now, but parsed
                 uint32_t offset = *u32_arg_ptr++;
                 uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32;
                 uint32_t effective_addr = addr + offset;
@@ -1586,13 +1606,10 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                     err = WAH_ERROR_MEMORY_OUT_OF_BOUNDS;
                     goto cleanup;
                 }
-                int32_t loaded_val;
-                memcpy(&loaded_val, ctx->memory_base + effective_addr, 4);
-                ctx->value_stack[ctx->sp++].i32 = loaded_val;
+                ctx->value_stack[ctx->sp++].i32 = (int32_t)wah_read_u32_le(ctx->memory_base + effective_addr);
                 break;
             }
             case WAH_OP_I32_STORE: {
-                uint32_t align = *u32_arg_ptr++; // Not used for now, but parsed
                 uint32_t offset = *u32_arg_ptr++;
                 int32_t val = ctx->value_stack[--ctx->sp].i32;
                 uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32;
@@ -1602,7 +1619,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                     err = WAH_ERROR_MEMORY_OUT_OF_BOUNDS;
                     goto cleanup;
                 }
-                memcpy(ctx->memory_base + effective_addr, &val, 4);
+                wah_write_u32_le(ctx->memory_base + effective_addr, (uint32_t)val);
                 break;
             }
             case WAH_OP_MEMORY_SIZE: {
