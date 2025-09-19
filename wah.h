@@ -152,6 +152,9 @@ typedef enum {
     // Memory Operators
     WAH_OP_I32_LOAD = 0x28,
     WAH_OP_I32_STORE = 0x36,
+    WAH_OP_MEMORY_SIZE = 0x3F, // memory.size
+    WAH_OP_MEMORY_GROW = 0x40, // memory.grow
+    WAH_OP_MEMORY_FILL = 0xC00B, // memory.fill (0xFC 0x0B)
 
     // Constants
     WAH_OP_I32_CONST = 0x41, WAH_OP_I64_CONST = 0x42, WAH_OP_F32_CONST = 0x43, WAH_OP_F64_CONST = 0x44,
@@ -178,6 +181,12 @@ typedef enum {
     WAH_OP_F32_ADD = 0x92, WAH_OP_F32_SUB = 0x93, WAH_OP_F32_MUL = 0x94, WAH_OP_F32_DIV = 0x95,
     WAH_OP_F64_ADD = 0xA0, WAH_OP_F64_SUB = 0xA1, WAH_OP_F64_MUL = 0xA2, WAH_OP_F64_DIV = 0xA3,
 } wah_opcode_t;
+
+// --- WebAssembly Miscellaneous Opcodes (multi-byte) ---
+typedef enum {
+    WAH_MISC_OP_MEMORY_FILL = 0x0B,
+    // Add other miscellaneous opcodes as needed
+} wah_misc_opcode_t;
 
 // --- WebAssembly Value Representation ---
 typedef union {
@@ -208,7 +217,7 @@ struct wah_module_s;
 
 // Represents a single function call's state on the call stack.
 typedef struct {
-    const uint8_t *ip;           // Instruction pointer into the parsed opcodes
+    const uint16_t *ip;           // Instruction pointer into the parsed opcodes
     const uint8_t *u8_arg_ptr;
     const uint16_t *u16_arg_ptr;
     const uint32_t *u32_arg_ptr;
@@ -271,7 +280,7 @@ typedef struct {
 // --- Pre-parsed Opcode Structure for Optimized Execution ---
 typedef struct {
     uint32_t instruction_count;
-    uint8_t *opcodes;           // Array of opcodes
+    uint16_t *opcodes;           // Array of opcodes
     uint8_t *u8_args;           // Array of uint8 arguments
     uint16_t *u16_args;         // Array of uint16 arguments  
     uint32_t *u32_args;         // Array of uint32 arguments (can be cast to int32_t)
@@ -360,7 +369,7 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, u
 static wah_error_t wah_run_interpreter(wah_exec_context_t *exec_ctx);
 
 // Validation helper functions
-static wah_error_t wah_validate_opcode(wah_opcode_t opcode, const uint8_t **code_ptr, const uint8_t *code_end, wah_validation_context_t *vctx);
+static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code_ptr, const uint8_t *code_end, wah_validation_context_t *vctx);
 
 // Pre-parsing functions
 static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wah_parsed_code_t *parsed_code);
@@ -515,10 +524,10 @@ static wah_error_t wah_parse_function_section(const uint8_t **ptr, const uint8_t
 }
 
 // Validation helper function that handles a single opcode
-static wah_error_t wah_validate_opcode(wah_opcode_t opcode, const uint8_t **code_ptr, const uint8_t *code_end, wah_validation_context_t *vctx) {
+static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code_ptr, const uint8_t *code_end, wah_validation_context_t *vctx) {
     wah_error_t err = WAH_OK;
     
-    switch (opcode) {
+    switch (opcode_val) {
         case WAH_OP_I32_LOAD: {
             uint32_t align, offset;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &align));
@@ -538,6 +547,32 @@ static wah_error_t wah_validate_opcode(wah_opcode_t opcode, const uint8_t **code
             if (val_type != WAH_VAL_TYPE_I32 || addr_type != WAH_VAL_TYPE_I32) return WAH_ERROR_VALIDATION_FAILED;
             return WAH_OK;
         }
+        case WAH_OP_MEMORY_SIZE: {
+            uint32_t mem_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &mem_idx)); // Expect 0x00 for memory index
+            if (mem_idx != 0) return WAH_ERROR_VALIDATION_FAILED; // Only memory 0 supported
+            return wah_validation_push_type(vctx, WAH_VAL_TYPE_I32); // Pushes current memory size in pages
+        }
+        case WAH_OP_MEMORY_GROW: {
+            uint32_t mem_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &mem_idx)); // Expect 0x00 for memory index
+            if (mem_idx != 0) return WAH_ERROR_VALIDATION_FAILED; // Only memory 0 supported
+            wah_val_type_t pages_to_grow_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &pages_to_grow_type)); // Pops pages to grow by (i32)
+            if (pages_to_grow_type != WAH_VAL_TYPE_I32) return WAH_ERROR_VALIDATION_FAILED;
+            return wah_validation_push_type(vctx, WAH_VAL_TYPE_I32); // Pushes old memory size in pages (i32)
+        }
+        case WAH_OP_MEMORY_FILL: {
+            uint32_t mem_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &mem_idx)); // Expect 0x00 for memory index
+            if (mem_idx != 0) return WAH_ERROR_VALIDATION_FAILED; // Only memory 0 supported
+            wah_val_type_t size_type, val_type, dst_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &size_type)); // Pops size (i32)
+            WAH_CHECK(wah_validation_pop_type(vctx, &val_type));  // Pops value (i32)
+            WAH_CHECK(wah_validation_pop_type(vctx, &dst_type));  // Pops destination address (i32)
+            if (size_type != WAH_VAL_TYPE_I32 || val_type != WAH_VAL_TYPE_I32 || dst_type != WAH_VAL_TYPE_I32) return WAH_ERROR_VALIDATION_FAILED;
+            return WAH_OK; // Pushes nothing
+        }
         case WAH_OP_LOCAL_GET:
         case WAH_OP_LOCAL_SET:
         case WAH_OP_LOCAL_TEE: {
@@ -555,13 +590,13 @@ static wah_error_t wah_validate_opcode(wah_opcode_t opcode, const uint8_t **code
                 expected_type = vctx->module->code_bodies[0].local_types[local_idx - vctx->func_type->param_count];
             }
             
-            if (opcode == WAH_OP_LOCAL_GET) {
+            if (opcode_val == WAH_OP_LOCAL_GET) {
                 return wah_validation_push_type(vctx, expected_type);
-            } else if (opcode == WAH_OP_LOCAL_SET) {
+            } else if (opcode_val == WAH_OP_LOCAL_SET) {
                 wah_val_type_t popped_type;
                 err = wah_validation_pop_type(vctx, &popped_type);
                 return (err != WAH_OK || popped_type != expected_type) ? WAH_ERROR_VALIDATION_FAILED : WAH_OK;
-            } else { // WAH_OP_LOCAL_TEE
+            } else if (opcode_val == WAH_OP_LOCAL_TEE) { // WAH_OP_LOCAL_TEE
                 wah_val_type_t popped_type;
                 err = wah_validation_pop_type(vctx, &popped_type);
                 if (err != WAH_OK || popped_type != expected_type) return WAH_ERROR_VALIDATION_FAILED;
@@ -736,9 +771,19 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         vctx.max_stack_depth = 0;
 
         while (code_ptr_validation < code_body_end_validation) {
-            wah_opcode_t opcode = (wah_opcode_t)*code_ptr_validation++;
+            uint16_t current_opcode_val;
+            uint8_t first_byte = *code_ptr_validation++;
+
+            if (first_byte == 0xFC) {
+                uint32_t sub_opcode_val;
+                WAH_CHECK(wah_decode_uleb128(&code_ptr_validation, code_body_end_validation, &sub_opcode_val));
+                if (sub_opcode_val > 0xFFF) return WAH_ERROR_INVALID_LEB128; // Sub-opcode out of expected range
+                current_opcode_val = (uint16_t)(0xC000 | sub_opcode_val);
+            } else {
+                current_opcode_val = (uint16_t)first_byte;
+            }
             
-            if (opcode == WAH_OP_END) {
+            if (current_opcode_val == WAH_OP_END) {
                 // At the end of a function, the type stack should match the function's result type
                 if (vctx.func_type->result_count == 0) {
                     if (vctx.type_stack.sp != 0) {
@@ -755,7 +800,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
                     return WAH_ERROR_VALIDATION_FAILED;
                 }
                 break;
-            } else if (opcode == WAH_OP_CALL) {
+            } else if (current_opcode_val == WAH_OP_CALL) {
                 uint32_t func_idx;
                 WAH_CHECK(wah_decode_uleb128(&code_ptr_validation, code_body_end_validation, &func_idx));
                 // Basic validation: check if func_idx is within bounds
@@ -777,7 +822,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
                     WAH_CHECK(wah_validation_push_type(&vctx, called_func_type->result_types[j]));
                 }
             } else {
-                WAH_CHECK(wah_validate_opcode(opcode, &code_ptr_validation, code_body_end_validation, &vctx));
+                WAH_CHECK(wah_validate_opcode(current_opcode_val, &code_ptr_validation, code_body_end_validation, &vctx));
             }
         }
         // --- End Validation Pass ---
@@ -935,6 +980,29 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
                 u32_arg_count += 2;
                 break;
             }
+            case WAH_OP_MEMORY_SIZE:
+            case WAH_OP_MEMORY_GROW: {
+                uint32_t mem_idx;
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // memory index (always 0x00)
+                break;
+            }
+            case 0xFC: { // Multi-byte opcode prefix
+                uint32_t sub_opcode_val;
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &sub_opcode_val));
+                if (sub_opcode_val > 0xFFF) return WAH_ERROR_INVALID_LEB128; // Sub-opcode out of expected range
+                wah_misc_opcode_t misc_opcode = (wah_misc_opcode_t)sub_opcode_val;
+
+                switch (misc_opcode) {
+                    case WAH_MISC_OP_MEMORY_FILL: {
+                        uint32_t mem_idx;
+                        WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // memory index (always 0x00)
+                        break;
+                    }
+                    default:
+                        return WAH_ERROR_UNKNOWN_SECTION; // Unknown miscellaneous opcode
+                }
+                break;
+            }
             case WAH_OP_END:
             case WAH_OP_RETURN:
             case WAH_OP_NOP:
@@ -971,7 +1039,7 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
     
     // Allocate arrays
     parsed_code->instruction_count = instruction_count;
-    parsed_code->opcodes = (uint8_t*)malloc(instruction_count);
+    parsed_code->opcodes = (uint16_t*)malloc(instruction_count * sizeof(uint16_t));
     if (!parsed_code->opcodes) return WAH_ERROR_OUT_OF_MEMORY;
     
     if (u8_arg_count > 0) {
@@ -1006,10 +1074,20 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
     parsed_code->u64_arg_count = 0;
     
     while (ptr < end) {
-        wah_opcode_t opcode = (wah_opcode_t)*ptr++;
-        parsed_code->opcodes[op_idx++] = opcode;
+        uint16_t current_opcode_val;
+        uint8_t first_byte = *ptr++; // Read first byte
+
+        if (first_byte == 0xFC) {
+            uint32_t sub_opcode_val;
+            WAH_CHECK(wah_decode_uleb128(&ptr, end, &sub_opcode_val));
+            assert(sub_opcode_val <= 0xFFF); // Already checked in first pass
+            current_opcode_val = (uint16_t)(0xC000 | sub_opcode_val);
+        } else {
+            current_opcode_val = (uint16_t)first_byte;
+        }
+        parsed_code->opcodes[op_idx++] = current_opcode_val; // Store the remapped opcode
         
-        switch (opcode) {
+        switch (current_opcode_val) {
             case WAH_OP_LOCAL_GET:
             case WAH_OP_LOCAL_SET:
             case WAH_OP_LOCAL_TEE:
@@ -1056,6 +1134,19 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
                 WAH_CHECK(wah_decode_uleb128(&ptr, end, &offset)); // offset
                 parsed_code->u32_args[parsed_code->u32_arg_count++] = align_flags;
                 parsed_code->u32_args[parsed_code->u32_arg_count++] = offset;
+                break;
+            }
+            case WAH_OP_MEMORY_SIZE:
+            case WAH_OP_MEMORY_GROW: {
+                uint32_t mem_idx;
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // memory index (always 0x00)
+                // No argument to store
+                break;
+            }
+            case WAH_OP_MEMORY_FILL: { // This is the remapped opcode
+                uint32_t mem_idx;
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // memory index (always 0x00)
+                // No argument to store
                 break;
             }
             default:
@@ -1266,14 +1357,14 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 
     // These are pointers to the current frame's state for faster access.
     wah_call_frame_t *frame;
-    const uint8_t *ip;
+    const uint16_t *ip;
     const uint32_t *u32_arg_ptr;
     const uint64_t *u64_arg_ptr;
 
     RELOAD_FRAME(); // Initial frame load
 
     while (ctx->call_depth > 0) { // Loop while there are active call frames
-        wah_opcode_t opcode = (wah_opcode_t)*ip++;
+        uint16_t opcode = *ip++;
 
         switch (opcode) {
             case WAH_OP_I32_CONST: {
@@ -1484,6 +1575,60 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 memcpy(ctx->memory_base + effective_addr, &val, 4);
                 break;
             }
+            case WAH_OP_MEMORY_SIZE: {
+                // memory index (always 0x00) is consumed by preparse, no need to read here
+                ctx->value_stack[ctx->sp++].i32 = (int32_t)(ctx->memory_size / WAH_WASM_PAGE_SIZE);
+                break;
+            }
+            case WAH_OP_MEMORY_GROW: {
+                // memory index (always 0x00) is consumed by preparse, no need to read here
+                int32_t pages_to_grow = ctx->value_stack[--ctx->sp].i32;
+                if (pages_to_grow < 0) {
+                    ctx->value_stack[ctx->sp++].i32 = -1; // Cannot grow by negative pages
+                    break;
+                }
+
+                uint32_t old_pages = ctx->memory_size / WAH_WASM_PAGE_SIZE;
+                uint32_t new_pages = old_pages + (uint32_t)pages_to_grow;
+
+                // Check against max_pages if defined (module->memories[0].max_pages)
+                // For now, we assume no max_pages or effectively unlimited if not set
+                if (ctx->module->memory_count > 0 && ctx->module->memories[0].max_pages > 0 && new_pages > ctx->module->memories[0].max_pages) {
+                    ctx->value_stack[ctx->sp++].i32 = -1; // Exceeds max memory
+                    break;
+                }
+
+                size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
+                uint8_t *new_memory_base = (uint8_t*)realloc(ctx->memory_base, new_memory_size);
+
+                if (new_memory_base == NULL) {
+                    ctx->value_stack[ctx->sp++].i32 = -1; // Realloc failed
+                    break;
+                }
+
+                // Initialize newly allocated memory to zero
+                if (new_memory_size > ctx->memory_size) {
+                    memset(new_memory_base + ctx->memory_size, 0, new_memory_size - ctx->memory_size);
+                }
+
+                ctx->memory_base = new_memory_base;
+                ctx->memory_size = (uint32_t)new_memory_size;
+                ctx->value_stack[ctx->sp++].i32 = (int32_t)old_pages;
+                break;
+            }
+            case WAH_OP_MEMORY_FILL: {
+                // memory index (always 0x00) is consumed by preparse, no need to read here
+                uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+                uint8_t val = (uint8_t)ctx->value_stack[--ctx->sp].i32;
+                uint32_t dst = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+
+                if (dst + size > ctx->memory_size || dst > ctx->memory_size) {
+                    err = WAH_ERROR_MEMORY_OUT_OF_BOUNDS;
+                    goto cleanup;
+                }
+                memset(ctx->memory_base + dst, val, size);
+                break;
+            }
             case WAH_OP_DROP: { ctx->sp--; break; }
             case WAH_OP_SELECT: {
                 wah_value_t c = ctx->value_stack[--ctx->sp];
@@ -1534,6 +1679,9 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, u
 
     // Push initial params onto the value stack
     for (uint32_t i = 0; i < param_count; ++i) {
+        if (exec_ctx->sp >= exec_ctx->value_stack_capacity) {
+            return WAH_ERROR_OUT_OF_MEMORY; // Value stack overflow
+        }
         exec_ctx->value_stack[exec_ctx->sp++] = params[i];
     }
 

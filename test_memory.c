@@ -96,15 +96,28 @@ static const uint8_t wasm_binary_memory_test[] = {
         0x0B, // end
 };
 
+static const unsigned char wasm_binary_memory_ops_test[] = {
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x10, 0x03, 0x60,
+  0x00, 0x01, 0x7f, 0x60, 0x01, 0x7f, 0x01, 0x7f, 0x60, 0x03, 0x7f, 0x7f,
+  0x7f, 0x00, 0x03, 0x04, 0x03, 0x00, 0x01, 0x02, 0x05, 0x04, 0x01, 0x01,
+  0x01, 0x02, 0x07, 0x35, 0x04, 0x03, 0x6d, 0x65, 0x6d, 0x02, 0x00, 0x0f,
+  0x67, 0x65, 0x74, 0x5f, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x5f, 0x73,
+  0x69, 0x7a, 0x65, 0x00, 0x00, 0x0b, 0x67, 0x72, 0x6f, 0x77, 0x5f, 0x6d,
+  0x65, 0x6d, 0x6f, 0x72, 0x79, 0x00, 0x01, 0x0b, 0x66, 0x69, 0x6c, 0x6c,
+  0x5f, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x00, 0x02, 0x0a, 0x19, 0x03,
+  0x04, 0x00, 0x3f, 0x00, 0x0b, 0x06, 0x00, 0x20, 0x00, 0x40, 0x00, 0x0b,
+  0x0b, 0x00, 0x20, 0x00, 0x20, 0x01, 0x20, 0x02, 0xfc, 0x0b, 0x00, 0x0b
+};
+
 
 int main() {
-    printf("Running memory tests...\n");
-
     wah_module_t module;
     wah_exec_context_t ctx;
     wah_error_t err;
-    wah_value_t params[2];
+    wah_value_t params[3];
     wah_value_t result;
+
+    printf("Running memory tests...\n");
 
     // Test 1: Parse module
     err = wah_parse_module(wasm_binary_memory_test, sizeof(wasm_binary_memory_test), &module);
@@ -181,10 +194,90 @@ int main() {
     assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for load with overflow address");
     printf("Memory out-of-bounds load test with overflow address successful.\n");
 
-    // Cleanup
+    // Cleanup for first module
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+
+    printf("\nRunning memory operations tests (size, grow, fill)...\n");
+
+    // Test 8: Parse new module for memory operations
+    err = wah_parse_module(wasm_binary_memory_ops_test, sizeof(wasm_binary_memory_ops_test), &module);
+    if (err != WAH_OK) {
+        printf("Failed to parse memory ops module. Error: %d\n", err);
+    }
+    assert(err == WAH_OK && "Failed to parse memory ops module");
+    printf("Memory ops module parsed successfully.\n");
+    assert(module.memory_count == 1 && "Expected 1 memory section in ops module");
+    assert(module.memories[0].min_pages == 1 && "Expected 1 min page in ops module");
+    assert(module.memories[0].max_pages == 2 && "Expected 2 max pages in ops module");
+
+    // Test 9: Create execution context for memory operations
+    err = wah_exec_context_create(&ctx, &module);
+    assert(err == WAH_OK && "Failed to create execution context for memory ops");
+    printf("Execution context for memory ops created successfully.\n");
+    assert(ctx.memory_base != NULL && "Memory base should not be NULL for ops");
+    assert(ctx.memory_size == WAH_WASM_PAGE_SIZE && "Memory size should be 1 page for ops");
+
+    // Test 10: memory.size - initial
+    err = wah_call(&ctx, &module, 0, NULL, 0, &result); // Call get_memory_size (func 0)
+    assert(err == WAH_OK && "Failed to call get_memory_size");
+    assert(result.i32 == 1 && "Initial memory size should be 1 page");
+    printf("Initial memory size: %d pages. Test successful.\n", result.i32);
+
+    // Test 11: memory.grow - success
+    params[0].i32 = 1; // Grow by 1 page
+    err = wah_call(&ctx, &module, 1, params, 1, &result); // Call grow_memory (func 1)
+    assert(err == WAH_OK && "Failed to call grow_memory");
+    assert(result.i32 == 1 && "grow_memory should return old size (1)");
+    assert(ctx.memory_size == (2 * WAH_WASM_PAGE_SIZE) && "Memory size should be 2 pages");
+    printf("Memory grown by 1 page. New size: %d pages. Test successful.\n", ctx.memory_size / WAH_WASM_PAGE_SIZE);
+
+    // Test 12: memory.size - after grow
+    err = wah_call(&ctx, &module, 0, NULL, 0, &result); // Call get_memory_size (func 0)
+    assert(err == WAH_OK && "Failed to call get_memory_size after grow");
+    assert(result.i32 == 2 && "Memory size should be 2 pages after grow");
+    printf("Memory size after grow: %d pages. Test successful.\n", result.i32);
+
+    // Test 13: memory.grow - failure (exceed max_pages)
+    params[0].i32 = 1; // Grow by 1 page (total 3, max 2)
+    err = wah_call(&ctx, &module, 1, params, 1, &result); // Call grow_memory (func 1)
+    assert(err == WAH_OK && "Failed to call grow_memory for failure test"); // Should return -1, not trap
+    assert(result.i32 == -1 && "grow_memory should return -1 on failure");
+    assert(ctx.memory_size == (2 * WAH_WASM_PAGE_SIZE) && "Memory size should remain 2 pages");
+    printf("Memory grow failure test successful (returned -1). Current size: %d pages.\n", ctx.memory_size / WAH_WASM_PAGE_SIZE);
+
+    // Test 14: memory.fill - basic
+    uint32_t fill_offset = 100;
+    uint8_t fill_value = 0xAA;
+    uint32_t fill_size = 256;
+    params[0].i32 = fill_offset; // offset
+    params[1].i32 = fill_value;  // value
+    params[2].i32 = fill_size;   // size
+    err = wah_call(&ctx, &module, 2, params, 3, NULL); // Call fill_memory (func 2)
+    assert(err == WAH_OK && "Failed to call fill_memory");
+    printf("Memory fill basic test successful. Filled %u bytes from offset %u with 0x%02X.\n", fill_size, fill_offset, fill_value);
+
+    // Verify filled memory directly
+    for (uint32_t i = 0; i < fill_size; ++i) {
+        assert(ctx.memory_base[fill_offset + i] == fill_value && "Memory fill verification failed");
+    }
+    printf("Memory fill verification successful.\n");
+
+    // Test 15: memory.fill - out of bounds
+    uint32_t oob_fill_offset = ctx.memory_size - 100; // Near end of memory
+    uint32_t oob_fill_size = 200; // Will go out of bounds
+    params[0].i32 = oob_fill_offset;
+    params[1].i32 = 0xBB;
+    params[2].i32 = oob_fill_size;
+    err = wah_call(&ctx, &module, 2, params, 3, NULL); // Call fill_memory (func 2)
+    assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for fill");
+    printf("Memory fill out-of-bounds test successful.\n");
+
+    // Final Cleanup
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
     printf("All memory tests passed!\n");
 
     return 0;
 }
+
