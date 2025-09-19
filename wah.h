@@ -122,6 +122,47 @@ static inline wah_error_t wah_decode_sleb128_64(const uint8_t **ptr, const uint8
     return WAH_OK;
 }
 
+// Helper to read a uint32_t from a byte array in little-endian format
+static inline uint32_t wah_read_u32_le(const uint8_t *ptr) {
+    return ((uint32_t)ptr[0] << 0) |
+           ((uint32_t)ptr[1] << 8) |
+           ((uint32_t)ptr[2] << 16) |
+           ((uint32_t)ptr[3] << 24);
+}
+
+// Helper to read a uint64_t from a byte array in little-endian format
+static inline uint64_t wah_read_u64_le(const uint8_t *ptr) {
+    return ((uint64_t)ptr[0] << 0) |
+           ((uint64_t)ptr[1] << 8) |
+           ((uint64_t)ptr[2] << 16) |
+           ((uint64_t)ptr[3] << 24) |
+           ((uint64_t)ptr[4] << 32) |
+           ((uint64_t)ptr[5] << 40) |
+           ((uint64_t)ptr[6] << 48) |
+           ((uint64_t)ptr[7] << 56);
+}
+
+// Helper to read a float from a byte array in little-endian format
+static inline float wah_read_f32_le(const uint8_t *ptr) {
+    union {
+        uint32_t i;
+        float f;
+    } u;
+    u.i = wah_read_u32_le(ptr);
+    return u.f;
+}
+
+// Helper to read a double from a byte array in little-endian format
+static inline double wah_read_f64_le(const uint8_t *ptr) {
+    union {
+        uint64_t i;
+        double d;
+    } u;
+    u.i = wah_read_u64_le(ptr);
+    return u.d;
+}
+
+
 // --- WebAssembly Types ---
 typedef enum {
     WAH_VAL_TYPE_I32 = 0x7F,
@@ -152,9 +193,9 @@ typedef enum {
     // Memory Operators
     WAH_OP_I32_LOAD = 0x28,
     WAH_OP_I32_STORE = 0x36,
-    WAH_OP_MEMORY_SIZE = 0x3F, // memory.size
-    WAH_OP_MEMORY_GROW = 0x40, // memory.grow
-    WAH_OP_MEMORY_FILL = 0xC00B, // memory.fill (0xFC 0x0B)
+    WAH_OP_MEMORY_SIZE = 0x3F,
+    WAH_OP_MEMORY_GROW = 0x40,
+    WAH_OP_MEMORY_FILL = 0xC00B,
 
     // Constants
     WAH_OP_I32_CONST = 0x41, WAH_OP_I64_CONST = 0x42, WAH_OP_F32_CONST = 0x43, WAH_OP_F64_CONST = 0x44,
@@ -873,13 +914,13 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
             }
             case WAH_OP_F32_CONST: {
                 if (*ptr + 4 > section_end) return WAH_ERROR_UNEXPECTED_EOF;
-                memcpy(&module->globals[i].initial_value.f32, *ptr, 4);
+                module->globals[i].initial_value.f32 = wah_read_f32_le(*ptr);
                 *ptr += 4;
                 break;
             }
             case WAH_OP_F64_CONST: {
                 if (*ptr + 8 > section_end) return WAH_ERROR_UNEXPECTED_EOF;
-                memcpy(&module->globals[i].initial_value.f64, *ptr, 8);
+                module->globals[i].initial_value.f64 = wah_read_f64_le(*ptr);
                 *ptr += 8;
                 break;
             }
@@ -1112,17 +1153,12 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
                 break;
             }
             case WAH_OP_F32_CONST: {
-                const uint8_t* p = ptr;
-                uint32_t bits = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-                parsed_code->u32_args[parsed_code->u32_arg_count++] = bits;
+                parsed_code->u32_args[parsed_code->u32_arg_count++] = wah_read_u32_le(ptr);
                 ptr += 4;
                 break;
             }
             case WAH_OP_F64_CONST: {
-                const uint8_t* p = ptr;
-                uint64_t bits = (uint64_t)p[0] | ((uint64_t)p[1] << 8) | ((uint64_t)p[2] << 16) | ((uint64_t)p[3] << 24) |
-                                ((uint64_t)p[4] << 32) | ((uint64_t)p[5] << 40) | ((uint64_t)p[6] << 48) | ((uint64_t)p[7] << 56);
-                parsed_code->u64_args[parsed_code->u64_arg_count++] = bits;
+                parsed_code->u64_args[parsed_code->u64_arg_count++] = wah_read_u64_le(ptr);
                 ptr += 8;
                 break;
             }
@@ -1180,10 +1216,7 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
     const uint8_t *end = wasm_binary + binary_size;
 
     // 1. Check Magic Number
-    uint32_t magic = ((uint32_t)ptr[0] << 0) |
-                     ((uint32_t)ptr[1] << 8) |
-                     ((uint32_t)ptr[2] << 16) |
-                     ((uint32_t)ptr[3] << 24);
+    uint32_t magic = wah_read_u32_le(ptr);
     ptr += 4;
     if (magic != 0x6D736100) {
         return WAH_ERROR_INVALID_MAGIC_NUMBER;
@@ -1193,10 +1226,7 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
     if (ptr + 4 > end) {
         return WAH_ERROR_UNEXPECTED_EOF;
     }
-    uint32_t version = ((uint32_t)ptr[0] << 0) |
-                       ((uint32_t)ptr[1] << 8) |
-                       ((uint32_t)ptr[2] << 16) |
-                       ((uint32_t)ptr[3] << 24);
+    uint32_t version = wah_read_u32_le(ptr);
     ptr += 4;
     if (version != 0x01) {
         return WAH_ERROR_INVALID_VERSION;
@@ -1669,14 +1699,6 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, u
         return WAH_ERROR_VALIDATION_FAILED;
     }
 
-    // Use the provided exec_ctx, do not create a new one
-    // wah_exec_context_t ctx;
-    // wah_error_t err = wah_exec_context_create(&ctx, module);
-    // if (err != WAH_OK) {
-    //     return err;
-    // }
-    wah_error_t err = WAH_OK;
-
     // Push initial params onto the value stack
     for (uint32_t i = 0; i < param_count; ++i) {
         if (exec_ctx->sp >= exec_ctx->value_stack_capacity) {
@@ -1686,11 +1708,7 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, u
     }
 
     // Push the first frame. Locals offset is the current stack pointer before parameters.
-    err = wah_push_frame(exec_ctx, func_idx, exec_ctx->sp - func_type->param_count);
-    if (err != WAH_OK) {
-        // wah_exec_context_destroy(&ctx);
-        return err;
-    }
+    WAH_CHECK(wah_push_frame(exec_ctx, func_idx, exec_ctx->sp - func_type->param_count));
     
     // Reserve space for the function's own locals and initialize them to zero
     uint32_t num_locals = exec_ctx->call_stack[0].code->local_count;
@@ -1704,18 +1722,17 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, u
     }
 
     // Run the main interpreter loop
-    err = wah_run_interpreter(exec_ctx);
+    WAH_CHECK(wah_run_interpreter(exec_ctx));
 
     // After execution, if a result is expected, it's on top of the stack.
-    if (err == WAH_OK && result && func_type->result_count > 0) {
+    if (result && func_type->result_count > 0) {
         // Check if the stack has any value to pop. It might be empty if the function trapped before returning a value.
         if (exec_ctx->sp > 0) {
             *result = exec_ctx->value_stack[exec_ctx->sp - 1];
         }
     }
 
-    // wah_exec_context_destroy(&ctx);
-    return err;
+    return WAH_OK;
 }
 
 // --- Module Cleanup Implementation ---
