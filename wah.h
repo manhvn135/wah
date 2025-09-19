@@ -1,3 +1,5 @@
+// WebAssembly interpreter in a Header file (WAH)
+
 #ifndef WAH_H
 #define WAH_H
 
@@ -17,8 +19,17 @@ typedef enum {
     WAH_ERROR_VALIDATION_FAILED,
     WAH_ERROR_TRAP,  // Runtime trap (division by zero, integer overflow, etc.)
     WAH_ERROR_CALL_STACK_OVERFLOW,
+    WAH_ERROR_MEMORY_OUT_OF_BOUNDS, // Memory access out of bounds
     // Add more specific error codes as needed
 } wah_error_t;
+
+// --- Memory Structure ---
+#define WAH_WASM_PAGE_SIZE 65536 // 64 KB
+
+typedef struct {
+    uint32_t min_pages;
+    uint32_t max_pages; // For future extension, currently ignored for fixed size
+} wah_memory_type_t;
 
 // --- LEB128 Decoding ---
 // Helper function to decode an unsigned LEB128 integer
@@ -204,6 +215,7 @@ typedef struct {
     const uint64_t *u64_arg_ptr;
     const struct wah_code_body_s *code; // The function body being executed
     uint32_t locals_offset;      // Offset into the shared value_stack for this frame's locals
+    uint32_t func_idx;           // Index of the function being executed
 } wah_call_frame_t;
 
 // The main context for the entire WebAssembly interpretation.
@@ -225,6 +237,10 @@ typedef struct wah_exec_context_s {
     uint32_t global_count;
 
     const struct wah_module_s *module;
+
+    // Memory
+    uint8_t *memory_base; // Pointer to the allocated memory
+    uint32_t memory_size; // Current size of the memory in bytes
 } wah_exec_context_t;
 
 // --- Section IDs ---
@@ -303,6 +319,10 @@ typedef struct wah_module_s {
     uint32_t global_count;
     wah_global_t *globals;
 
+    // Memory Section
+    uint32_t memory_count;
+    wah_memory_type_t *memories;
+
     // Add other sections as they are implemented
 } wah_module_t;
 
@@ -324,6 +344,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
 static wah_error_t wah_parse_function_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
 static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
 static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
 
 // --- Interpreter Functions ---
 // Creates and initializes an execution context.
@@ -333,7 +354,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
 void wah_exec_context_destroy(wah_exec_context_t *exec_ctx);
 
 // The main entry point to call a WebAssembly function.
-wah_error_t wah_call(const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
+wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
 
 // The core interpreter loop (internal).
 static wah_error_t wah_run_interpreter(wah_exec_context_t *exec_ctx);
@@ -498,6 +519,25 @@ static wah_error_t wah_validate_opcode(wah_opcode_t opcode, const uint8_t **code
     wah_error_t err = WAH_OK;
     
     switch (opcode) {
+        case WAH_OP_I32_LOAD: {
+            uint32_t align, offset;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &align));
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &offset));
+            wah_val_type_t addr_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &addr_type));
+            if (addr_type != WAH_VAL_TYPE_I32) return WAH_ERROR_VALIDATION_FAILED;
+            return wah_validation_push_type(vctx, WAH_VAL_TYPE_I32);
+        }
+        case WAH_OP_I32_STORE: {
+            uint32_t align, offset;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &align));
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &offset));
+            wah_val_type_t val_type, addr_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &val_type));
+            WAH_CHECK(wah_validation_pop_type(vctx, &addr_type));
+            if (val_type != WAH_VAL_TYPE_I32 || addr_type != WAH_VAL_TYPE_I32) return WAH_ERROR_VALIDATION_FAILED;
+            return WAH_OK;
+        }
         case WAH_OP_LOCAL_GET:
         case WAH_OP_LOCAL_SET:
         case WAH_OP_LOCAL_TEE: {
@@ -811,6 +851,31 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
     return WAH_OK;
 }
 
+static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    uint32_t count;
+    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
+    module->memory_count = count;
+    if (count > 0) {
+        module->memories = (wah_memory_type_t*)malloc(sizeof(wah_memory_type_t) * count);
+        if (!module->memories) return WAH_ERROR_OUT_OF_MEMORY;
+        memset(module->memories, 0, sizeof(wah_memory_type_t) * count);
+
+        for (uint32_t i = 0; i < count; ++i) {
+            if (*ptr >= section_end) return WAH_ERROR_UNEXPECTED_EOF;
+            uint8_t flags = *(*ptr)++; // Flags for memory type (0x00 for fixed, 0x01 for resizable)
+
+            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->memories[i].min_pages));
+            
+            if (flags & 0x01) { // If resizable, read max_pages
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->memories[i].max_pages));
+            } else {
+                module->memories[i].max_pages = module->memories[i].min_pages; // Fixed size
+            }
+        }
+    }
+    return WAH_OK;
+}
+
 // Pre-parsing function to convert bytecode to optimized structure
 static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wah_parsed_code_t *parsed_code) {
     memset(parsed_code, 0, sizeof(wah_parsed_code_t));
@@ -859,6 +924,15 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
                 if (ptr + 8 > end) return WAH_ERROR_UNEXPECTED_EOF;
                 ptr += 8;
                 u64_arg_count++;
+                break;
+            }
+            case WAH_OP_I32_LOAD:
+            case WAH_OP_I32_STORE: {
+                uint32_t align_flags;
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &align_flags)); // align flags
+                uint32_t offset;
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &offset)); // offset
+                u32_arg_count += 2;
                 break;
             }
             case WAH_OP_END:
@@ -974,6 +1048,16 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
                 ptr += 8;
                 break;
             }
+            case WAH_OP_I32_LOAD:
+            case WAH_OP_I32_STORE: {
+                uint32_t align_flags;
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &align_flags)); // align flags
+                uint32_t offset;
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &offset)); // offset
+                parsed_code->u32_args[parsed_code->u32_arg_count++] = align_flags;
+                parsed_code->u32_args[parsed_code->u32_arg_count++] = offset;
+                break;
+            }
             default:
                 // No arguments to store
                 break;
@@ -1054,10 +1138,12 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
             case WAH_SECTION_GLOBAL:
                 WAH_CHECK_GOTO(wah_parse_global_section(&ptr, section_payload_end, module), cleanup_parse);
                 break;
+            case WAH_SECTION_MEMORY:
+                WAH_CHECK_GOTO(wah_parse_memory_section(&ptr, section_payload_end, module), cleanup_parse);
+                break;
             case WAH_SECTION_CUSTOM:
             case WAH_SECTION_IMPORT:
             case WAH_SECTION_TABLE:
-            case WAH_SECTION_MEMORY:
             case WAH_SECTION_EXPORT:
             case WAH_SECTION_START:
             case WAH_SECTION_ELEMENT:
@@ -1122,6 +1208,18 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
     exec_ctx->sp = 0;
     exec_ctx->call_depth = 0;
 
+    if (module->memory_count > 0) {
+        exec_ctx->memory_size = module->memories[0].min_pages * WAH_WASM_PAGE_SIZE;
+        exec_ctx->memory_base = (uint8_t*)malloc(exec_ctx->memory_size);
+        if (!exec_ctx->memory_base) {
+            free(exec_ctx->value_stack);
+            free(exec_ctx->call_stack);
+            free(exec_ctx->globals);
+            return WAH_ERROR_OUT_OF_MEMORY;
+        }
+        memset(exec_ctx->memory_base, 0, exec_ctx->memory_size);
+    }
+
     return WAH_OK;
 }
 
@@ -1130,6 +1228,7 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     free(exec_ctx->value_stack);
     free(exec_ctx->call_stack);
     free(exec_ctx->globals);
+    free(exec_ctx->memory_base);
     memset(exec_ctx, 0, sizeof(wah_exec_context_t));
 }
 
@@ -1149,9 +1248,18 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, uint32_t func_idx, ui
     frame->u32_arg_ptr = code_body->parsed_code.u32_args;
     frame->u64_arg_ptr = code_body->parsed_code.u64_args;
     frame->locals_offset = locals_offset;
+    frame->func_idx = func_idx;
 
     return WAH_OK;
 }
+
+#define RELOAD_FRAME() \
+    do { \
+        frame = &ctx->call_stack[ctx->call_depth - 1]; \
+        ip = frame->ip; \
+        u32_arg_ptr = frame->u32_arg_ptr; \
+        u64_arg_ptr = frame->u64_arg_ptr; \
+    } while(0)
 
 static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     wah_error_t err = WAH_OK;
@@ -1162,18 +1270,9 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     const uint32_t *u32_arg_ptr;
     const uint64_t *u64_arg_ptr;
 
-#define RELOAD_FRAME() \
-    do { \
-        if (ctx->call_depth == 0) goto end_of_loop; \
-        frame = &ctx->call_stack[ctx->call_depth - 1]; \
-        ip = frame->ip; \
-        u32_arg_ptr = frame->u32_arg_ptr; \
-        u64_arg_ptr = frame->u64_arg_ptr; \
-    } while(0)
+    RELOAD_FRAME(); // Initial frame load
 
-    RELOAD_FRAME();
-
-    while (ctx->call_depth > 0) {
+    while (ctx->call_depth > 0) { // Loop while there are active call frames
         wah_opcode_t opcode = (wah_opcode_t)*ip++;
 
         switch (opcode) {
@@ -1247,7 +1346,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 break;
             }
             case WAH_OP_RETURN: {
-                const wah_func_type_t *func_type = &ctx->module->types[ctx->module->function_type_indices[ctx->call_depth - 1]];
+                const wah_func_type_t *func_type = &ctx->module->types[ctx->module->function_type_indices[frame->func_idx]];
                 uint32_t results_to_keep = func_type->result_count;
                 wah_value_t result_val;
                 if (results_to_keep == 1) {
@@ -1261,11 +1360,13 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                     ctx->value_stack[ctx->sp++] = result_val;
                 }
 
-                RELOAD_FRAME();
+                if (ctx->call_depth > 0) {
+                    RELOAD_FRAME();
+                }
                 break;
             }
             case WAH_OP_END: { // End of function
-                const wah_func_type_t *func_type = &ctx->module->types[ctx->module->function_type_indices[ctx->call_depth - 1]];
+                const wah_func_type_t *func_type = &ctx->module->types[ctx->module->function_type_indices[frame->func_idx]];
                 uint32_t results_to_keep = func_type->result_count;
                 wah_value_t result_val;
                 if (results_to_keep == 1) {
@@ -1283,7 +1384,9 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                     ctx->value_stack[ctx->sp++] = result_val;
                 }
 
-                RELOAD_FRAME();
+                if (ctx->call_depth > 0) {
+                    RELOAD_FRAME();
+                }
                 break;
             }
 
@@ -1352,6 +1455,35 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 
 #undef OPS
 
+            case WAH_OP_I32_LOAD: {
+                uint32_t align = *u32_arg_ptr++; // Not used for now, but parsed
+                uint32_t offset = *u32_arg_ptr++;
+                uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+                uint32_t effective_addr = addr + offset;
+
+                if (effective_addr >= ctx->memory_size || ctx->memory_size - effective_addr < 4) {
+                    err = WAH_ERROR_MEMORY_OUT_OF_BOUNDS;
+                    goto cleanup;
+                }
+                int32_t loaded_val;
+                memcpy(&loaded_val, ctx->memory_base + effective_addr, 4);
+                ctx->value_stack[ctx->sp++].i32 = loaded_val;
+                break;
+            }
+            case WAH_OP_I32_STORE: {
+                uint32_t align = *u32_arg_ptr++; // Not used for now, but parsed
+                uint32_t offset = *u32_arg_ptr++;
+                int32_t val = ctx->value_stack[--ctx->sp].i32;
+                uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+                uint32_t effective_addr = addr + offset;
+
+                if (effective_addr >= ctx->memory_size || ctx->memory_size - effective_addr < 4) {
+                    err = WAH_ERROR_MEMORY_OUT_OF_BOUNDS;
+                    goto cleanup;
+                }
+                memcpy(ctx->memory_base + effective_addr, &val, 4);
+                break;
+            }
             case WAH_OP_DROP: { ctx->sp--; break; }
             case WAH_OP_SELECT: {
                 wah_value_t c = ctx->value_stack[--ctx->sp];
@@ -1370,7 +1502,6 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
         }
     }
 
-end_of_loop:
     return WAH_OK;
 
 cleanup:
@@ -1383,7 +1514,7 @@ cleanup:
     return err;
 }
 
-wah_error_t wah_call(const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
+wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
     if (func_idx >= module->function_count) {
         return WAH_ERROR_UNKNOWN_SECTION; 
     }
@@ -1393,47 +1524,49 @@ wah_error_t wah_call(const wah_module_t *module, uint32_t func_idx, const wah_va
         return WAH_ERROR_VALIDATION_FAILED;
     }
 
-    wah_exec_context_t ctx;
-    wah_error_t err = wah_exec_context_create(&ctx, module);
-    if (err != WAH_OK) {
-        return err;
-    }
+    // Use the provided exec_ctx, do not create a new one
+    // wah_exec_context_t ctx;
+    // wah_error_t err = wah_exec_context_create(&ctx, module);
+    // if (err != WAH_OK) {
+    //     return err;
+    // }
+    wah_error_t err = WAH_OK;
 
     // Push initial params onto the value stack
     for (uint32_t i = 0; i < param_count; ++i) {
-        ctx.value_stack[ctx.sp++] = params[i];
+        exec_ctx->value_stack[exec_ctx->sp++] = params[i];
     }
 
-    // Push the first frame. Locals offset is 0.
-    err = wah_push_frame(&ctx, func_idx, 0);
+    // Push the first frame. Locals offset is the current stack pointer before parameters.
+    err = wah_push_frame(exec_ctx, func_idx, exec_ctx->sp - func_type->param_count);
     if (err != WAH_OK) {
-        wah_exec_context_destroy(&ctx);
+        // wah_exec_context_destroy(&ctx);
         return err;
     }
     
     // Reserve space for the function's own locals and initialize them to zero
-    uint32_t num_locals = ctx.call_stack[0].code->local_count;
+    uint32_t num_locals = exec_ctx->call_stack[0].code->local_count;
     if (num_locals > 0) {
-        if (ctx.sp + num_locals > ctx.value_stack_capacity) {
-            wah_exec_context_destroy(&ctx);
+        if (exec_ctx->sp + num_locals > exec_ctx->value_stack_capacity) {
+            // wah_exec_context_destroy(&ctx);
             return WAH_ERROR_OUT_OF_MEMORY; // A more specific stack overflow error would be better
         }
-        memset(&ctx.value_stack[ctx.sp], 0, sizeof(wah_value_t) * num_locals);
-        ctx.sp += num_locals;
+        memset(&exec_ctx->value_stack[exec_ctx->sp], 0, sizeof(wah_value_t) * num_locals);
+        exec_ctx->sp += num_locals;
     }
 
     // Run the main interpreter loop
-    err = wah_run_interpreter(&ctx);
+    err = wah_run_interpreter(exec_ctx);
 
     // After execution, if a result is expected, it's on top of the stack.
     if (err == WAH_OK && result && func_type->result_count > 0) {
         // Check if the stack has any value to pop. It might be empty if the function trapped before returning a value.
-        if (ctx.sp > 0) {
-            *result = ctx.value_stack[ctx.sp - 1];
+        if (exec_ctx->sp > 0) {
+            *result = exec_ctx->value_stack[exec_ctx->sp - 1];
         }
     }
 
-    wah_exec_context_destroy(&ctx);
+    // wah_exec_context_destroy(&ctx);
     return err;
 }
 
@@ -1461,6 +1594,7 @@ void wah_free_module(wah_module_t *module) {
     }
 
     free(module->globals);
+    free(module->memories);
 
     // Reset all fields to 0/NULL
     memset(module, 0, sizeof(wah_module_t));

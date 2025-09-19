@@ -54,6 +54,7 @@ const uint8_t rem_by_zero_wasm[] = {
 
 int main() {
     wah_module_t module;
+    wah_exec_context_t ctx; // Add this line
     wah_error_t err;
     wah_value_t params[2], result;
 
@@ -66,17 +67,26 @@ int main() {
         printf("Failed to parse div_by_zero module: %d\n", err);
         return 1;
     }
+    // Create context
+    err = wah_exec_context_create(&ctx, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error creating execution context for div_by_zero test: %d\n", err);
+        wah_free_module(&module);
+        return 1;
+    }
     
     params[0].i32 = 42; 
     params[1].i32 = 0; // Division by zero
-    err = wah_call(&module, 0, params, 2, &result);
+    err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
         printf("✓ Correctly trapped on division by zero (error %d)\n", err);
     } else {
         printf("✗ Expected trap but got error %d\n", err);
+        wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
     }
+    wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
 
     // Test signed integer overflow
@@ -86,17 +96,26 @@ int main() {
         printf("Failed to parse signed_overflow module: %d\n", err);
         return 1;
     }
+    // Create context
+    err = wah_exec_context_create(&ctx, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error creating execution context for signed_overflow test: %d\n", err);
+        wah_free_module(&module);
+        return 1;
+    }
     
     params[0].i32 = INT32_MIN; 
     params[1].i32 = -1; // This causes overflow: INT_MIN / -1 = +2^31 (unrepresentable)
-    err = wah_call(&module, 0, params, 2, &result);
+    err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
         printf("✓ Correctly trapped on signed integer overflow (error %d)\n", err);
     } else {
         printf("✗ Expected trap but got error %d\n", err);
+        wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
     }
+    wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
 
     // Test unsigned division by zero
@@ -106,17 +125,26 @@ int main() {
         printf("Failed to parse div_u_by_zero module: %d\n", err);
         return 1;
     }
+    // Create context
+    err = wah_exec_context_create(&ctx, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error creating execution context for div_u_by_zero test: %d\n", err);
+        wah_free_module(&module);
+        return 1;
+    }
     
     params[0].i32 = 100; 
     params[1].i32 = 0; // Division by zero
-    err = wah_call(&module, 0, params, 2, &result);
+    err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
         printf("✓ Correctly trapped on unsigned division by zero (error %d)\n", err);
     } else {
         printf("✗ Expected trap but got error %d\n", err);
+        wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
     }
+    wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
 
     // Test remainder by zero
@@ -126,17 +154,26 @@ int main() {
         printf("Failed to parse rem_by_zero module: %d\n", err);
         return 1;
     }
+    // Create context
+    err = wah_exec_context_create(&ctx, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error creating execution context for rem_by_zero test: %d\n", err);
+        wah_free_module(&module);
+        return 1;
+    }
     
     params[0].i32 = 7; 
     params[1].i32 = 0; // Division by zero
-    err = wah_call(&module, 0, params, 2, &result);
+    err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
         printf("✓ Correctly trapped on remainder by zero (error %d)\n", err);
     } else {
         printf("✗ Expected trap but got error %d\n", err);
+        wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
     }
+    wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
 
     // Test that valid operations still work
@@ -146,17 +183,26 @@ int main() {
         printf("Failed to parse module for valid test: %d\n", err);
         return 1;
     }
+    // Create context
+    err = wah_exec_context_create(&ctx, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error creating execution context for valid test: %d\n", err);
+        wah_free_module(&module);
+        return 1;
+    }
     
     params[0].i32 = 20; 
     params[1].i32 = 4; // Valid division: 20 / 4 = 5
-    err = wah_call(&module, 0, params, 2, &result);
+    err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_OK) {
         printf("✓ Valid division works: 20 / 4 = %d\n", result.i32);
     } else {
         printf("✗ Valid division failed with error %d\n", err);
+        wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
     }
+    wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
 
     // Test that INT_MIN % -1 = 0 (doesn't trap per spec)
@@ -166,17 +212,26 @@ int main() {
         printf("Failed to parse rem module: %d\n", err);
         return 1;
     }
+    // Create context
+    err = wah_exec_context_create(&ctx, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error creating execution context for INT_MIN %% -1 test: %d\n", err);
+        wah_free_module(&module);
+        return 1;
+    }
     
     params[0].i32 = INT32_MIN; 
     params[1].i32 = -1; // This should return 0, not trap
-    err = wah_call(&module, 0, params, 2, &result);
+    err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_OK && result.i32 == 0) {
         printf("✓ INT_MIN %% -1 correctly returns 0 (no trap)\n");
     } else {
         printf("✗ INT_MIN %% -1 failed: error %d, result %d\n", err, result.i32);
+        wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
     }
+    wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
 
     printf("\n=== All trap tests passed! ===\n");

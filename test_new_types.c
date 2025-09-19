@@ -152,9 +152,10 @@ const uint8_t i64_const_drop_wasm[] = {
 };
 
 
-int run_test(const char* test_name, const uint8_t* wasm_binary, size_t binary_size, int (*test_func)(wah_module_t*)) {
+int run_test(const char* test_name, const uint8_t* wasm_binary, size_t binary_size, int (*test_func)(wah_module_t*, wah_exec_context_t*)) {
     printf("\n--- Testing %s ---\n", test_name);
     wah_module_t module;
+    wah_exec_context_t ctx; // Declare context
     wah_error_t err = wah_parse_module(wasm_binary, binary_size, &module);
     if (err != WAH_OK) {
         fprintf(stderr, "FAIL: Parsing %s (error: %d)\n", test_name, err);
@@ -162,69 +163,78 @@ int run_test(const char* test_name, const uint8_t* wasm_binary, size_t binary_si
     }
     printf("PASS: Parsing %s\n", test_name);
 
-    int result = test_func(&module);
+    // Create execution context
+    err = wah_exec_context_create(&ctx, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "FAIL: Creating execution context for %s (error: %d)\n", test_name, err);
+        wah_free_module(&module);
+        return 1;
+    }
+
+    int result = test_func(&module, &ctx); // Pass context to test_func
+    wah_exec_context_destroy(&ctx); // Destroy context
     wah_free_module(&module);
     return result;
 }
 
-int test_i64_add(wah_module_t* module) {
+int test_i64_add(wah_module_t* module, wah_exec_context_t* ctx) {
     wah_value_t params[2];
     wah_value_t result;
     params[0].i64 = 10000000000; // 10^10
     params[1].i64 = 25000000000; // 2.5 * 10^10
-    wah_error_t err = wah_call(module, 0, params, 2, &result);
+    wah_error_t err = wah_call(ctx, module, 0, params, 2, &result);
     CHECK_ERR(err, WAH_OK, "i64_add wah_call");
     CHECK(result.i64 == 35000000000, "i64_add result");
     return 0;
 }
 
-int test_f32_mul(wah_module_t* module) {
+int test_f32_mul(wah_module_t* module, wah_exec_context_t* ctx) {
     wah_value_t params[2];
     wah_value_t result;
     params[0].f32 = 12.5f;
     params[1].f32 = -4.0f;
-    wah_error_t err = wah_call(module, 0, params, 2, &result);
+    wah_error_t err = wah_call(ctx, module, 0, params, 2, &result);
     CHECK_ERR(err, WAH_OK, "f32_mul wah_call");
     CHECK_FLOAT(result.f32, -50.0f, 1e-6, "f32_mul result");
     return 0;
 }
 
-int test_f64_sub(wah_module_t* module) {
+int test_f64_sub(wah_module_t* module, wah_exec_context_t* ctx) {
     wah_value_t params[2];
     wah_value_t result;
     params[0].f64 = 3.1415926535;
     params[1].f64 = 0.0000000005;
-    wah_error_t err = wah_call(module, 0, params, 2, &result);
+    wah_error_t err = wah_call(ctx, module, 0, params, 2, &result);
     CHECK_ERR(err, WAH_OK, "f64_sub wah_call");
     CHECK_DOUBLE(result.f64, 3.1415926530, 1e-9, "f64_sub result");
     return 0;
 }
 
-int test_i64_overflow(wah_module_t* module) {
+int test_i64_overflow(wah_module_t* module, wah_exec_context_t* ctx) {
     wah_value_t result;
-    wah_error_t err = wah_call(module, 0, NULL, 0, &result);
+    wah_error_t err = wah_call(ctx, module, 0, NULL, 0, &result);
     CHECK_ERR(err, WAH_OK, "i64_overflow wah_call");
     // INT64_MAX + 1 wraps around to INT64_MIN, which is < 0, so comparison should be true (1)
     CHECK(result.i32 == 1, "i64_overflow result");
     return 0;
 }
 
-int test_f64_div_zero(wah_module_t* module) {
+int test_f64_div_zero(wah_module_t* module, wah_exec_context_t* ctx) {
     wah_value_t result;
-    wah_error_t err = wah_call(module, 0, NULL, 0, &result);
+    wah_error_t err = wah_call(ctx, module, 0, NULL, 0, &result);
     CHECK_ERR(err, WAH_OK, "f64_div_zero wah_call");
     CHECK(isinf(result.f64) && result.f64 > 0, "f64_div_zero result is +inf");
     return 0;
 }
 
-int test_i64_div_overflow(wah_module_t* module) {
+int test_i64_div_overflow(wah_module_t* module, wah_exec_context_t* ctx) {
     wah_value_t result;
-    wah_error_t err = wah_call(module, 0, NULL, 0, &result);
+    wah_error_t err = wah_call(ctx, module, 0, NULL, 0, &result);
     CHECK_ERR(err, WAH_ERROR_TRAP, "i64_div_overflow wah_call traps");
     return 0;
 }
 
-int test_i64_const_drop(wah_module_t* module) {
+int test_i64_const_drop(wah_module_t* module, wah_exec_context_t* ctx) {
     // This test only needs to parse successfully.
     (void)module;
     return 0;

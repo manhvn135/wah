@@ -110,6 +110,7 @@ const uint8_t stack_underflow_wasm[] = {
 
 int main() {
     wah_module_t module;
+    wah_exec_context_t ctx; // Add this line
     wah_error_t err;
 
     printf("--- Testing Valid Module (simple_add_wasm) ---\n");
@@ -120,6 +121,15 @@ int main() {
         return 1;
     }
     printf("Module parsed successfully.\n");
+
+    // Create execution context
+    err = wah_exec_context_create(&ctx, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error creating execution context: %d\n", err);
+        wah_free_module(&module);
+        return 1;
+    }
+
     printf("Function max stack depth: %u\n", module.code_bodies[0].max_stack_depth);
 
     uint32_t func_idx = 0;
@@ -130,9 +140,10 @@ int main() {
     params[1].i32 = 20;
 
     printf("Interpreting function %u with params %d and %d...\n", func_idx, params[0].i32, params[1].i32);
-    err = wah_call(&module, func_idx, params, 2, &result);
+    err = wah_call(&ctx, &module, func_idx, params, 2, &result);
     if (err != WAH_OK) {
         fprintf(stderr, "Error interpreting function: %d\n", err);
+        wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
     }
@@ -142,15 +153,17 @@ int main() {
     params[0].i32 = 5;
     params[1].i32 = 7;
     printf("Interpreting function %u with params %d and %d...\n", func_idx, params[0].i32, params[1].i32);
-    err = wah_call(&module, func_idx, params, 2, &result);
+    err = wah_call(&ctx, &module, func_idx, params, 2, &result);
     if (err != WAH_OK) {
         fprintf(stderr, "Error interpreting function: %d\n", err);
+        wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
     }
     printf("Function interpreted successfully.\n");
     printf("Result: %d\n", result.i32);
 
+    wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
     printf("Valid module freed.\n");
 

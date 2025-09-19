@@ -28,6 +28,7 @@ const uint8_t eq_test_wasm[] = {
 
 int main() {
     wah_module_t module;
+    wah_exec_context_t ctx;
     wah_error_t err;
     wah_value_t params[2], result;
 
@@ -37,15 +38,24 @@ int main() {
         printf("Failed to parse AND module: %d\n", err);
         return 1;
     }
+    // Create context
+    err = wah_exec_context_create(&ctx, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error creating execution context for AND test: %d\n", err);
+        wah_free_module(&module);
+        return 1;
+    }
     
     params[0].i32 = 0xFF; params[1].i32 = 0x0F;
-    err = wah_call(&module, 0, params, 2, &result);
+    err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err != WAH_OK) {
         printf("Failed to execute AND: %d\n", err);
+        wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
     }
     printf("0xFF & 0x0F = 0x%X (expected 0xF)\n", result.i32);
+    wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
 
     printf("\n=== Testing I32.EQ ===\n");
@@ -54,19 +64,28 @@ int main() {
         printf("Failed to parse EQ module: %d\n", err);
         return 1;
     }
+    // Create context
+    err = wah_exec_context_create(&ctx, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error creating execution context for EQ test: %d\n", err);
+        wah_free_module(&module);
+        return 1;
+    }
     
     params[0].i32 = 42; params[1].i32 = 42;
-    err = wah_call(&module, 0, params, 2, &result);
+    err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err != WAH_OK) {
         printf("Failed to execute EQ: %d\n", err);
+        wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
     }
     printf("42 == 42 = %d (expected 1)\n", result.i32);
     
     params[0].i32 = 42; params[1].i32 = 24;
-    err = wah_call(&module, 0, params, 2, &result);
+    err = wah_call(&ctx, &module, 0, params, 2, &result);
     printf("42 == 24 = %d (expected 0)\n", result.i32);
+    wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
 
     printf("\nAll new operations working correctly!\n");
