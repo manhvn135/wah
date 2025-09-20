@@ -974,6 +974,21 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             vctx->control_sp--;
             return WAH_OK;
         }
+
+        case WAH_OP_BR:
+        case WAH_OP_BR_IF: {
+            uint32_t relative_depth;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &relative_depth));
+            if (relative_depth >= vctx->control_sp) return WAH_ERROR_VALIDATION_FAILED;
+
+            if (opcode_val == WAH_OP_BR_IF) {
+                wah_val_type_t cond_type;
+                WAH_CHECK(wah_validation_pop_type(vctx, &cond_type));
+                if (cond_type != WAH_VAL_TYPE_I32) return WAH_ERROR_VALIDATION_FAILED;
+            }
+            // br makes the rest of the block unreachable. A full validator would change state here.
+            return WAH_OK;
+        }
             
         default:
             break; // Assume other opcodes are valid for now
@@ -1166,6 +1181,7 @@ typedef struct {
     uint32_t raw_offset;
     uint32_t preparsed_offset;
     uint32_t preparsed_size;
+    uint32_t jump_target; // Store jump target offset here
 } wah_instr_info_t;
 
 typedef struct {
@@ -1187,6 +1203,13 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
     wah_control_stack_entry_t control_stack[WAH_MAX_CONTROL_DEPTH];
     uint32_t control_sp = 0;
 
+    // Fixup list for forward branches (br, br_if to block/if)
+    // [0] = instruction index of the branch to patch
+    // [1] = control stack pointer (depth) of the target block
+    #define MAX_FORWARD_BRANCHES 128
+    uint32_t forward_branch_fixups[MAX_FORWARD_BRANCHES][2];
+    uint32_t forward_branch_count = 0;
+
     const uint8_t *ptr = code;
     const uint8_t *end = code + code_size;
     uint32_t current_preparsed_offset = 0;
@@ -1199,6 +1222,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             instructions = new_instrs;
         }
         wah_instr_info_t* current_instr = &instructions[instr_count];
+        memset(current_instr, 0, sizeof(wah_instr_info_t));
         current_instr->raw_offset = ptr - code;
         current_instr->preparsed_offset = current_preparsed_offset;
 
@@ -1206,7 +1230,19 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
         WAH_CHECK_GOTO(wah_decode_opcode(&ptr, end, &current_instr->opcode), cleanup);
         
         uint32_t arg_size = 0;
+        bool size_is_final = false;
+
         switch (current_instr->opcode) {
+            case WAH_OP_BLOCK:
+            case WAH_OP_LOOP: {
+                int32_t block_type;
+                WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
+                current_instr->preparsed_size = 0; // Removed
+                size_is_final = true;
+                WAH_BOUNDS_CHECK_GOTO(control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                control_stack[control_sp++] = (wah_control_stack_entry_t){.opcode = (wah_opcode_t)current_instr->opcode, .instr_idx = instr_count, .else_instr_idx = (uint32_t)-1};
+                break;
+            }
             case WAH_OP_IF: {
                 int32_t block_type;
                 WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
@@ -1219,34 +1255,75 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 WAH_BOUNDS_CHECK_GOTO(control_sp > 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
                 wah_control_stack_entry_t* top = &control_stack[control_sp - 1];
                 WAH_BOUNDS_CHECK_GOTO(top->opcode == WAH_OP_IF && top->else_instr_idx == (uint32_t)-1, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                
+                arg_size = sizeof(uint32_t); // Jump offset to END
+                
+                // Patch the IF jump to here (right after the ELSE instruction)
+                wah_instr_info_t* if_instr = &instructions[top->instr_idx];
+                if_instr->jump_target = current_preparsed_offset + sizeof(uint16_t) + arg_size;
+
                 top->else_instr_idx = instr_count;
-                arg_size = sizeof(uint32_t); // Jump offset
                 break;
             }
             case WAH_OP_END: {
+                current_instr->preparsed_size = 0; // Removed by default
                 if (control_sp > 0) {
-                    wah_control_stack_entry_t* top = &control_stack[--control_sp];
-                    wah_instr_info_t* if_instr = &instructions[top->instr_idx];
-                    if (top->else_instr_idx != (uint32_t)-1) { // if-else-end
-                        wah_instr_info_t* else_instr = &instructions[top->else_instr_idx];
-                        // if jumps to after else
-                        wah_write_u32_le((uint8_t*)&if_instr->preparsed_size, else_instr->preparsed_offset + sizeof(uint16_t) + sizeof(uint32_t));
-                        // else jumps to after end
-                        wah_write_u32_le((uint8_t*)&else_instr->preparsed_size, current_preparsed_offset);
-                    } else { // if-end
-                        // if jumps to after end
-                        wah_write_u32_le((uint8_t*)&if_instr->preparsed_size, current_preparsed_offset);
+                    uint32_t current_block_level = control_sp - 1;
+                    wah_control_stack_entry_t* top = &control_stack[current_block_level];
+                    
+                    // Patch forward branches targeting this block
+                    for (int i = (int)forward_branch_count - 1; i >= 0; i--) {
+                        if (forward_branch_fixups[i][1] == current_block_level) {
+                            wah_instr_info_t* br_instr = &instructions[forward_branch_fixups[i][0]];
+                            br_instr->jump_target = current_preparsed_offset;
+                            // Remove fixup by swapping with the last one
+                            forward_branch_fixups[i][0] = forward_branch_fixups[forward_branch_count - 1][0];
+                            forward_branch_fixups[i][1] = forward_branch_fixups[forward_branch_count - 1][1];
+                            forward_branch_count--;
+                        }
                     }
-                    arg_size = 0; // END is removed
+
+                    if (top->opcode == WAH_OP_IF) {
+                        if (top->else_instr_idx != (uint32_t)-1) { // if-else-end
+                            wah_instr_info_t* else_instr = &instructions[top->else_instr_idx];
+                            else_instr->jump_target = current_preparsed_offset;
+                        } else { // if-end
+                            wah_instr_info_t* if_instr = &instructions[top->instr_idx];
+                            if_instr->jump_target = current_preparsed_offset;
+                        }
+                    }
+                    control_sp--;
                 } else {
                     // This is the function's final END, keep it.
-                    arg_size = 0;
+                    current_instr->preparsed_size = sizeof(uint16_t);
+                }
+                size_is_final = true;
+                break;
+            }
+            case WAH_OP_BR:
+            case WAH_OP_BR_IF: {
+                uint32_t relative_depth;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &relative_depth), cleanup);
+                arg_size = sizeof(uint32_t);
+
+                WAH_BOUNDS_CHECK_GOTO(control_sp > relative_depth, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                uint32_t target_level = control_sp - 1 - relative_depth;
+                wah_control_stack_entry_t* target_frame = &control_stack[target_level];
+
+                if (target_frame->opcode == WAH_OP_LOOP) {
+                    // Backward jump to loop start. Offset is known.
+                    wah_instr_info_t* loop_instr = &instructions[target_frame->instr_idx];
+                    current_instr->jump_target = loop_instr->preparsed_offset;
+                } else { // Forward jump to end of BLOCK or IF
+                    WAH_BOUNDS_CHECK_GOTO(forward_branch_count < MAX_FORWARD_BRANCHES, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+                    forward_branch_fixups[forward_branch_count][0] = instr_count;
+                    forward_branch_fixups[forward_branch_count][1] = target_level;
+                    forward_branch_count++;
                 }
                 break;
             }
             case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
-            case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: case WAH_OP_CALL:
-            case WAH_OP_BR: case WAH_OP_BR_IF: {
+            case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: case WAH_OP_CALL: {
                 uint32_t val; WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &val), cleanup);
                 arg_size = sizeof(uint32_t); break;
             }
@@ -1279,15 +1356,16 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             default: arg_size = 0; break;
         }
         
-        if (current_instr->opcode == WAH_OP_END && control_sp > 0 && control_stack[control_sp].opcode != 0) {
-             current_instr->preparsed_size = 0;
-        } else {
-             current_instr->preparsed_size = sizeof(uint16_t) + arg_size;
+        if (!size_is_final) {
+            current_instr->preparsed_size = sizeof(uint16_t) + arg_size;
         }
         current_preparsed_offset += current_instr->preparsed_size;
         instr_count++;
     }
     
+    WAH_BOUNDS_CHECK_GOTO(control_sp == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
+    WAH_BOUNDS_CHECK_GOTO(forward_branch_count == 0, WAH_ERROR_VALIDATION_FAILED, cleanup); // Unresolved forward branches
+
     parsed_code->bytecode_size = current_preparsed_offset;
     parsed_code->bytecode = (uint8_t*)malloc(parsed_code->bytecode_size);
     if (!parsed_code->bytecode) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
@@ -1296,28 +1374,26 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
     uint8_t *write_ptr = parsed_code->bytecode;
     for (uint32_t i = 0; i < instr_count; ++i) {
         wah_instr_info_t* instr = &instructions[i];
+        if (instr->preparsed_size == 0) continue; // Skip removed instructions
+
         ptr = code + instr->raw_offset;
         uint16_t opcode;
         WAH_CHECK_GOTO(wah_decode_opcode(&ptr, end, &opcode), cleanup);
-
-        if (opcode == WAH_OP_END && i > 0 && (instructions[i-1].opcode == WAH_OP_IF || instructions[i-1].opcode == WAH_OP_ELSE)) {
-            continue; // Skip writing END for control blocks
-        }
-        if (instr->preparsed_size == 0) continue;
 
         wah_write_u16_le(write_ptr, opcode);
         write_ptr += sizeof(uint16_t);
 
         switch (opcode) {
             case WAH_OP_IF:
-            case WAH_OP_ELSE: {
-                wah_write_u32_le(write_ptr, instr->preparsed_size); // This is where the target offset was stored
+            case WAH_OP_ELSE:
+            case WAH_OP_BR:
+            case WAH_OP_BR_IF: {
+                wah_write_u32_le(write_ptr, instr->jump_target);
                 write_ptr += sizeof(uint32_t);
                 break;
             }
             case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
-            case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: case WAH_OP_CALL:
-            case WAH_OP_BR: case WAH_OP_BR_IF: {
+            case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: case WAH_OP_CALL: {
                 uint32_t val; WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &val), cleanup);
                 wah_write_u32_le(write_ptr, val); write_ptr += sizeof(uint32_t); break;
             }
@@ -1559,6 +1635,11 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
         bytecode_ip += sizeof(uint16_t);
 
         switch (opcode) {
+            case WAH_OP_BLOCK: // Should not appear in preparsed code
+            case WAH_OP_LOOP:  // Should not appear in preparsed code
+                err = WAH_ERROR_VALIDATION_FAILED;
+                goto cleanup;
+
             case WAH_OP_IF: {
                 uint32_t offset = wah_read_u32_le(bytecode_ip);
                 bytecode_ip += sizeof(uint32_t);
@@ -1567,10 +1648,24 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 }
                 break;
             }
-            case WAH_OP_ELSE: {
+            case WAH_OP_ELSE: { // This is an unconditional jump
                 uint32_t offset = wah_read_u32_le(bytecode_ip);
                 bytecode_ip += sizeof(uint32_t);
                 bytecode_ip = bytecode_base + offset;
+                break;
+            }
+            case WAH_OP_BR: {
+                uint32_t offset = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
+                bytecode_ip = bytecode_base + offset;
+                break;
+            }
+            case WAH_OP_BR_IF: {
+                uint32_t offset = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
+                if (ctx->value_stack[--ctx->sp].i32 != 0) {
+                    bytecode_ip = bytecode_base + offset;
+                }
                 break;
             }
             case WAH_OP_I32_CONST: {

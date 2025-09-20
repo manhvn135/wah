@@ -139,66 +139,6 @@ static const uint8_t loop_wasm[] = {
 };
 
 
-static void test_if_else() {
-    printf("Testing if-else (parameter)...\n");
-    
-    wah_module_t module;
-    wah_error_t err = wah_parse_module(if_else_wasm, sizeof(if_else_wasm), &module);
-    assert(err == WAH_OK);
-    
-    wah_exec_context_t ctx;
-    err = wah_exec_context_create(&ctx, &module);
-    assert(err == WAH_OK);
-    
-    // Test if branch (param == 42)
-    wah_value_t params[1] = {{.i32 = 42}};
-    wah_value_t result;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
-    assert(err == WAH_OK);
-    assert(result.i32 == 1);
-    printf("  ✓ If branch works (42 -> 1)\n");
-    
-    // Test else branch (param != 42)
-    params[0].i32 = 99;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
-    assert(err == WAH_OK);
-    assert(result.i32 == 0);
-    printf("  ✓ Else branch works (99 -> 0)\n");
-    
-    wah_exec_context_destroy(&ctx);
-    wah_free_module(&module);
-}
-
-static void test_loop() {
-    printf("Testing loop control flow...\n");
-    
-    wah_module_t module;
-    wah_error_t err = wah_parse_module(loop_wasm, sizeof(loop_wasm), &module);
-    assert(err == WAH_OK);
-    
-    wah_exec_context_t ctx;
-    err = wah_exec_context_create(&ctx, &module);
-    assert(err == WAH_OK);
-    
-    // Test loop: sum of 0..4 = 0+1+2+3 = 6
-    wah_value_t params[1] = {{.i32 = 4}};
-    wah_value_t result;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
-    assert(err == WAH_OK);
-    assert(result.i32 == 6);
-    printf("  ✓ Loop works (sum 0..3 = 6)\n");
-    
-    // Test empty loop
-    params[0].i32 = 0;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
-    assert(err == WAH_OK);
-    assert(result.i32 == 0);
-    printf("  ✓ Empty loop works (sum 0.. = 0)\n");
-    
-    wah_exec_context_destroy(&ctx);
-    wah_free_module(&module);
-}
-
 static void test_simple_block() {
     printf("Testing simple block...\n");
     
@@ -243,13 +183,83 @@ static void test_simple_if_const() {
     wah_free_module(&module);
 }
 
+static void test_if_else() {
+    printf("Testing if-else (parameter)...\n");
+    
+    wah_module_t module;
+    wah_error_t err = wah_parse_module(if_else_wasm, sizeof(if_else_wasm), &module);
+    assert(err == WAH_OK);
+    
+    wah_exec_context_t ctx;
+    err = wah_exec_context_create(&ctx, &module);
+    assert(err == WAH_OK);
+    
+    // Test if branch (param == 42)
+    wah_value_t params[1] = {{.i32 = 42}};
+    wah_value_t result;
+    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    assert(err == WAH_OK);
+    assert(result.i32 == 1);
+    printf("  ✓ If branch works (42 -> 1)\n");
+    
+    // Test else branch (param != 42)
+    params[0].i32 = 99;
+    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    assert(err == WAH_OK);
+    assert(result.i32 == 0);
+    printf("  ✓ Else branch works (99 -> 0)\n");
+    
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_loop() {
+    printf("Testing loop control flow...\n");
+    
+    wah_module_t module;
+    wah_error_t err = wah_parse_module(loop_wasm, sizeof(loop_wasm), &module);
+    if (err != WAH_OK) {
+        printf("  ERROR: Failed to parse loop module: %s\n", wah_strerror(err));
+        assert(false);
+        return;
+    }
+    
+    wah_exec_context_t ctx;
+    err = wah_exec_context_create(&ctx, &module);
+    assert(err == WAH_OK);
+    
+    // Test loop: sum of 0..4 = 0+1+2+3 = 6
+    wah_value_t params[1] = {{.i32 = 4}};
+    wah_value_t result;
+    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    if (err != WAH_OK) {
+        printf("  ERROR: Loop function call failed: %s\n", wah_strerror(err));
+        assert(false);
+    } else if (result.i32 != 6) {
+        printf("  ERROR: Expected 6, got %d\n", result.i32);
+        assert(false);
+    } else {
+        printf("  ✓ Loop works (sum 0..3 = 6)\n");
+    }
+    
+    // Test empty loop
+    params[0].i32 = 0;
+    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    assert(err == WAH_OK);
+    assert(result.i32 == 0);
+    printf("  ✓ Empty loop works (sum 0.. = 0)\n");
+    
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 
 int main() {
     printf("=== Control Flow Tests ===\n");
-    // test_simple_block();
+    test_simple_block();
     test_simple_if_const();
     test_if_else();
-    // test_loop(); // Loop implementation is not complete yet
+    test_loop();
     printf("=== Control Flow Tests Complete ===\n");
     return 0;
 }
