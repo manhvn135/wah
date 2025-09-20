@@ -302,11 +302,7 @@ struct wah_module_s;
 
 // Represents a single function call's state on the call stack.
 typedef struct {
-    const uint16_t *ip;           // Instruction pointer into the parsed opcodes
-    const uint8_t *u8_arg_ptr;
-    const uint16_t *u16_arg_ptr;
-    const uint32_t *u32_arg_ptr;
-    const uint64_t *u64_arg_ptr;
+    const uint8_t *bytecode_ip;  // Instruction pointer into the parsed bytecode
     const struct wah_code_body_s *code; // The function body being executed
     uint32_t locals_offset;      // Offset into the shared value_stack for this frame's locals
     uint32_t func_idx;           // Index of the function being executed
@@ -364,18 +360,8 @@ typedef struct {
 
 // --- Pre-parsed Opcode Structure for Optimized Execution ---
 typedef struct {
-    uint32_t instruction_count;
-    uint16_t *opcodes;           // Array of opcodes
-    uint8_t *u8_args;           // Array of uint8 arguments
-    uint16_t *u16_args;         // Array of uint16 arguments  
-    uint32_t *u32_args;         // Array of uint32 arguments (can be cast to int32_t)
-    uint64_t *u64_args;         // Array of uint64 arguments (can be cast to int64_t or double)
-    
-    // Indices for argument arrays (pointing to next available slot)
-    uint32_t u8_arg_count;
-    uint32_t u16_arg_count;
-    uint32_t u32_arg_count;
-    uint32_t u64_arg_count;
+    uint8_t *bytecode;           // Combined array of opcodes and arguments
+    uint32_t bytecode_size;      // Total size of the bytecode array
 } wah_parsed_code_t;
 
 // --- Code Body Structure ---
@@ -431,6 +417,8 @@ typedef struct {
 } wah_validation_context_t;
 
 // --- Parser Functions ---
+static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, uint16_t *opcode_val);
+
 wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah_module_t *module);
 
 // Internal section parsing functions
@@ -699,6 +687,29 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             if (size_type != WAH_VAL_TYPE_I32 || val_type != WAH_VAL_TYPE_I32 || dst_type != WAH_VAL_TYPE_I32) return WAH_ERROR_VALIDATION_FAILED;
             return WAH_OK; // Pushes nothing
         }
+        case WAH_OP_CALL: {
+            uint32_t func_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &func_idx));
+            // Basic validation: check if func_idx is within bounds
+            if (func_idx >= vctx->module->function_count) {
+                return WAH_ERROR_VALIDATION_FAILED;
+            }
+            // Type checking for call
+            const wah_func_type_t *called_func_type = &vctx->module->types[vctx->module->function_type_indices[func_idx]];
+            // Pop parameters from type stack
+            for (int32_t j = called_func_type->param_count - 1; j >= 0; --j) {
+                wah_val_type_t popped_type;
+                err = wah_validation_pop_type(vctx, &popped_type);
+                if (err != WAH_OK || popped_type != called_func_type->param_types[j]) {
+                    return WAH_ERROR_VALIDATION_FAILED;
+                }
+            }
+            // Push results onto type stack
+            for (uint32_t j = 0; j < called_func_type->result_count; ++j) {
+                WAH_CHECK(wah_validation_push_type(vctx, called_func_type->result_types[j]));
+            }
+            return WAH_OK;
+        }
         case WAH_OP_LOCAL_GET:
         case WAH_OP_LOCAL_SET:
         case WAH_OP_LOCAL_TEE: {
@@ -728,6 +739,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 if (err != WAH_OK || popped_type != expected_type) return WAH_ERROR_VALIDATION_FAILED;
                 return wah_validation_push_type(vctx, expected_type);
             }
+            break;
         }
         
         case WAH_OP_I32_CONST: {
@@ -825,9 +837,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             return WAH_OK;
             
         default:
-            // For now, assume other opcodes are valid
-            return WAH_OK;
+            break; // Assume other opcodes are valid for now
     }
+    return WAH_OK;
 }
 
 static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
@@ -898,16 +910,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
         while (code_ptr_validation < code_body_end_validation) {
             uint16_t current_opcode_val;
-            uint8_t first_byte = *code_ptr_validation++;
-
-            if (first_byte > 0xF0) {
-                uint32_t sub_opcode_val;
-                WAH_CHECK(wah_decode_uleb128(&code_ptr_validation, code_body_end_validation, &sub_opcode_val));
-                if (sub_opcode_val > 0xFFF) return WAH_ERROR_INVALID_LEB128; // Sub-opcode out of expected range
-                current_opcode_val = (uint16_t)(((first_byte & 0x0F) << 12) | sub_opcode_val);
-            } else {
-                current_opcode_val = (uint16_t)first_byte;
-            }
+            WAH_CHECK(wah_decode_opcode(&code_ptr_validation, code_body_end_validation, &current_opcode_val));
             
             if (current_opcode_val == WAH_OP_END) {
                 // At the end of a function, the type stack should match the function's result type
@@ -926,27 +929,6 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
                     return WAH_ERROR_VALIDATION_FAILED;
                 }
                 break;
-            } else if (current_opcode_val == WAH_OP_CALL) {
-                uint32_t func_idx;
-                WAH_CHECK(wah_decode_uleb128(&code_ptr_validation, code_body_end_validation, &func_idx));
-                // Basic validation: check if func_idx is within bounds
-                if (func_idx >= module->function_count) {
-                    return WAH_ERROR_VALIDATION_FAILED;
-                }
-                // Type checking for call
-                const wah_func_type_t *called_func_type = &module->types[module->function_type_indices[func_idx]];
-                // Pop parameters from type stack
-                for (int32_t j = called_func_type->param_count - 1; j >= 0; --j) {
-                    wah_val_type_t popped_type;
-                    err = wah_validation_pop_type(&vctx, &popped_type);
-                    if (err != WAH_OK || popped_type != called_func_type->param_types[j]) {
-                        return WAH_ERROR_VALIDATION_FAILED;
-                    }
-                }
-                // Push results onto type stack
-                for (uint32_t j = 0; j < called_func_type->result_count; ++j) {
-                    WAH_CHECK(wah_validation_push_type(&vctx, called_func_type->result_types[j]));
-                }
             } else {
                 WAH_CHECK(wah_validate_opcode(current_opcode_val, &code_ptr_validation, code_body_end_validation, &vctx));
             }
@@ -1050,25 +1032,18 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
 // Pre-parsing function to convert bytecode to optimized structure
 static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wah_parsed_code_t *parsed_code) {
     memset(parsed_code, 0, sizeof(wah_parsed_code_t));
-    
-    // First pass: count instructions and arguments
+
+    // First pass: Calculate the total size needed for the combined bytecode
     const uint8_t *ptr = code;
     const uint8_t *end = code + code_size;
-    uint32_t instruction_count = 0;
-    uint32_t u8_arg_count = 0, u16_arg_count = 0, u32_arg_count = 0, u64_arg_count = 0;
-    
-    while (ptr < end) {
-        wah_opcode_t opcode = (wah_opcode_t)*ptr++;
-        if (opcode > 0xF0) { // Multi-byte opcode prefix is remapped
-            uint32_t sub_opcode_val;
-            WAH_CHECK(wah_decode_uleb128(&ptr, end, &sub_opcode_val));
-            if (sub_opcode_val > 0xFFF) return WAH_ERROR_INVALID_LEB128;
-            opcode = ((opcode & 0x0F) << 12) | sub_opcode_val;
-        }
+    uint32_t current_bytecode_size = 0;
 
-        instruction_count++;
-        
-        switch (opcode) {
+    while (ptr < end) {
+        uint16_t opcode_val;
+        WAH_CHECK(wah_decode_opcode(&ptr, end, &opcode_val));
+        current_bytecode_size += sizeof(uint16_t); // For the opcode itself
+
+        switch (opcode_val) {
             case WAH_OP_LOCAL_GET:
             case WAH_OP_LOCAL_SET:
             case WAH_OP_LOCAL_TEE:
@@ -1077,31 +1052,31 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
             case WAH_OP_CALL: {
                 uint32_t arg;
                 WAH_CHECK(wah_decode_uleb128(&ptr, end, &arg));
-                u32_arg_count++;
+                current_bytecode_size += sizeof(uint32_t); // For the index
                 break;
             }
             case WAH_OP_I32_CONST: {
                 int32_t arg;
                 WAH_CHECK(wah_decode_sleb128_32(&ptr, end, &arg));
-                u32_arg_count++;
+                current_bytecode_size += sizeof(uint32_t); // For the i32 constant
                 break;
             }
             case WAH_OP_I64_CONST: {
                 int64_t arg;
                 WAH_CHECK(wah_decode_sleb128_64(&ptr, end, &arg));
-                u64_arg_count++;
+                current_bytecode_size += sizeof(uint64_t); // For the i64 constant
                 break;
             }
             case WAH_OP_F32_CONST: {
                 if (ptr + 4 > end) return WAH_ERROR_UNEXPECTED_EOF;
                 ptr += 4;
-                u32_arg_count++;
+                current_bytecode_size += sizeof(float); // For the f32 constant
                 break;
             }
             case WAH_OP_F64_CONST: {
                 if (ptr + 8 > end) return WAH_ERROR_UNEXPECTED_EOF;
                 ptr += 8;
-                u64_arg_count++;
+                current_bytecode_size += sizeof(double); // For the f64 constant
                 break;
             }
             case WAH_OP_I32_LOAD: case WAH_OP_I64_LOAD: case WAH_OP_F32_LOAD: case WAH_OP_F64_LOAD:
@@ -1115,105 +1090,68 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
                 WAH_CHECK(wah_decode_uleb128(&ptr, end, &align_flags)); // align flags (read but not stored)
                 uint32_t offset;
                 WAH_CHECK(wah_decode_uleb128(&ptr, end, &offset)); // offset
-                u32_arg_count += 1; // Only store offset
+                current_bytecode_size += sizeof(uint32_t); // Only store offset
                 break;
             }
             case WAH_OP_MEMORY_SIZE:
             case WAH_OP_MEMORY_GROW: {
                 uint32_t mem_idx;
                 WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // memory index (always 0x00)
+                // No argument to store in the parsed bytecode
                 break;
             }
-            case WAH_OP_MEMORY_FILL: {
+            case WAH_OP_MEMORY_FILL: { // This is the remapped opcode
                 uint32_t mem_idx;
                 WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // memory index (always 0x00)
+                // No argument to store in the parsed bytecode
                 break;
             }
-            case WAH_OP_END:
-            case WAH_OP_RETURN:
-            case WAH_OP_NOP:
-            case WAH_OP_UNREACHABLE:
-            case WAH_OP_DROP:
-            case WAH_OP_SELECT:
-            // All binary and unary operations without immediate arguments
+            // Opcodes with no immediate arguments
+            case WAH_OP_UNREACHABLE: case WAH_OP_NOP: case WAH_OP_BLOCK: case WAH_OP_LOOP:
+            case WAH_OP_IF: case WAH_OP_ELSE: case WAH_OP_END: case WAH_OP_BR: case WAH_OP_BR_IF:
+            case WAH_OP_BR_TABLE: case WAH_OP_RETURN: case WAH_OP_DROP: case WAH_OP_SELECT:
+            case WAH_OP_I32_EQZ: case WAH_OP_I32_EQ: case WAH_OP_I32_NE:
+            case WAH_OP_I32_LT_S: case WAH_OP_I32_LT_U: case WAH_OP_I32_GT_S: case WAH_OP_I32_GT_U:
+            case WAH_OP_I32_LE_S: case WAH_OP_I32_LE_U: case WAH_OP_I32_GE_S: case WAH_OP_I32_GE_U:
+            case WAH_OP_I64_EQZ: case WAH_OP_I64_EQ: case WAH_OP_I64_NE:
+            case WAH_OP_I64_LT_S: case WAH_OP_I64_LT_U: case WAH_OP_I64_GT_S: case WAH_OP_I64_GT_U:
+            case WAH_OP_I64_LE_S: case WAH_OP_I64_LE_U: case WAH_OP_I64_GE_S: case WAH_OP_I64_GE_U:
+            case WAH_OP_F32_EQ: case WAH_OP_F32_NE:
+            case WAH_OP_F32_LT: case WAH_OP_F32_GT: case WAH_OP_F32_LE: case WAH_OP_F32_GE:
+            case WAH_OP_F64_EQ: case WAH_OP_F64_NE:
+            case WAH_OP_F64_LT: case WAH_OP_F64_GT: case WAH_OP_F64_LE: case WAH_OP_F64_GE:
             case WAH_OP_I32_ADD: case WAH_OP_I32_SUB: case WAH_OP_I32_MUL:
             case WAH_OP_I32_DIV_S: case WAH_OP_I32_DIV_U: case WAH_OP_I32_REM_S: case WAH_OP_I32_REM_U:
             case WAH_OP_I32_AND: case WAH_OP_I32_OR: case WAH_OP_I32_XOR:
             case WAH_OP_I32_SHL: case WAH_OP_I32_SHR_S: case WAH_OP_I32_SHR_U:
-            case WAH_OP_I32_EQ: case WAH_OP_I32_NE: case WAH_OP_I32_LT_S: case WAH_OP_I32_LT_U:
-            case WAH_OP_I32_GT_S: case WAH_OP_I32_GT_U: case WAH_OP_I32_LE_S: case WAH_OP_I32_LE_U:
-            case WAH_OP_I32_GE_S: case WAH_OP_I32_GE_U: case WAH_OP_I32_EQZ:
             case WAH_OP_I64_ADD: case WAH_OP_I64_SUB: case WAH_OP_I64_MUL:
             case WAH_OP_I64_DIV_S: case WAH_OP_I64_DIV_U: case WAH_OP_I64_REM_S: case WAH_OP_I64_REM_U:
             case WAH_OP_I64_AND: case WAH_OP_I64_OR: case WAH_OP_I64_XOR:
             case WAH_OP_I64_SHL: case WAH_OP_I64_SHR_S: case WAH_OP_I64_SHR_U:
-            case WAH_OP_I64_EQ: case WAH_OP_I64_NE: case WAH_OP_I64_LT_S: case WAH_OP_I64_LT_U:
-            case WAH_OP_I64_GT_S: case WAH_OP_I64_GT_U: case WAH_OP_I64_LE_S: case WAH_OP_I64_LE_U:
-            case WAH_OP_I64_GE_S: case WAH_OP_I64_GE_U: case WAH_OP_I64_EQZ:
             case WAH_OP_F32_ADD: case WAH_OP_F32_SUB: case WAH_OP_F32_MUL: case WAH_OP_F32_DIV:
-            case WAH_OP_F32_EQ: case WAH_OP_F32_NE: case WAH_OP_F32_LT: case WAH_OP_F32_GT: 
-            case WAH_OP_F32_LE: case WAH_OP_F32_GE:
             case WAH_OP_F64_ADD: case WAH_OP_F64_SUB: case WAH_OP_F64_MUL: case WAH_OP_F64_DIV:
-            case WAH_OP_F64_EQ: case WAH_OP_F64_NE: case WAH_OP_F64_LT: case WAH_OP_F64_GT: 
-            case WAH_OP_F64_LE: case WAH_OP_F64_GE:
                 // No arguments
                 break;
             default:
                 return WAH_ERROR_UNKNOWN_SECTION; // Unknown opcode
         }
     }
-    
-    // Allocate arrays
-    parsed_code->instruction_count = instruction_count;
-    parsed_code->opcodes = (uint16_t*)malloc(instruction_count * sizeof(uint16_t));
-    if (!parsed_code->opcodes) return WAH_ERROR_OUT_OF_MEMORY;
-    
-    if (u8_arg_count > 0) {
-        parsed_code->u8_args = (uint8_t*)malloc(u8_arg_count);
-        if (!parsed_code->u8_args) { free(parsed_code->opcodes); return WAH_ERROR_OUT_OF_MEMORY; }
-    }
-    if (u16_arg_count > 0) {
-        parsed_code->u16_args = (uint16_t*)malloc(u16_arg_count * sizeof(uint16_t));
-        if (!parsed_code->u16_args) { free(parsed_code->opcodes); free(parsed_code->u8_args); return WAH_ERROR_OUT_OF_MEMORY; }
-    }
-    if (u32_arg_count > 0) {
-        parsed_code->u32_args = (uint32_t*)malloc(u32_arg_count * sizeof(uint32_t));
-        if (!parsed_code->u32_args) { 
-            free(parsed_code->opcodes); free(parsed_code->u8_args); free(parsed_code->u16_args); 
-            return WAH_ERROR_OUT_OF_MEMORY; 
-        }
-    }
-    if (u64_arg_count > 0) {
-        parsed_code->u64_args = (uint64_t*)malloc(u64_arg_count * sizeof(uint64_t));
-        if (!parsed_code->u64_args) { 
-            free(parsed_code->opcodes); free(parsed_code->u8_args); free(parsed_code->u16_args); free(parsed_code->u32_args);
-            return WAH_ERROR_OUT_OF_MEMORY; 
-        }
-    }
-    
-    // Second pass: populate arrays
-    ptr = code;
-    uint32_t op_idx = 0;
-    parsed_code->u8_arg_count = 0;
-    parsed_code->u16_arg_count = 0; 
-    parsed_code->u32_arg_count = 0;
-    parsed_code->u64_arg_count = 0;
-    
-    while (ptr < end) {
-        uint16_t current_opcode_val;
-        uint8_t first_byte = *ptr++; // Read first byte
 
-        if (first_byte == 0xFC) {
-            uint32_t sub_opcode_val;
-            WAH_CHECK(wah_decode_uleb128(&ptr, end, &sub_opcode_val));
-            assert(sub_opcode_val <= 0xFFF); // Already checked in first pass
-            current_opcode_val = (uint16_t)(0xC000 | sub_opcode_val);
-        } else {
-            current_opcode_val = (uint16_t)first_byte;
-        }
-        parsed_code->opcodes[op_idx++] = current_opcode_val; // Store the remapped opcode
-        
-        switch (current_opcode_val) {
+    parsed_code->bytecode_size = current_bytecode_size;
+    parsed_code->bytecode = (uint8_t*)malloc(parsed_code->bytecode_size);
+    if (!parsed_code->bytecode) return WAH_ERROR_OUT_OF_MEMORY;
+
+    // Second pass: Populate the combined bytecode array
+    ptr = code;
+    uint8_t *bytecode_write_ptr = parsed_code->bytecode;
+
+    while (ptr < end) {
+        uint16_t opcode_val;
+        WAH_CHECK(wah_decode_opcode(&ptr, end, &opcode_val));
+        wah_write_u16_le(bytecode_write_ptr, opcode_val);
+        bytecode_write_ptr += sizeof(uint16_t);
+
+        switch (opcode_val) {
             case WAH_OP_LOCAL_GET:
             case WAH_OP_LOCAL_SET:
             case WAH_OP_LOCAL_TEE:
@@ -1222,29 +1160,34 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
             case WAH_OP_CALL: {
                 uint32_t arg;
                 WAH_CHECK(wah_decode_uleb128(&ptr, end, &arg));
-                parsed_code->u32_args[parsed_code->u32_arg_count++] = arg;
+                wah_write_u32_le(bytecode_write_ptr, arg);
+                bytecode_write_ptr += sizeof(uint32_t);
                 break;
             }
             case WAH_OP_I32_CONST: {
                 int32_t arg;
                 WAH_CHECK(wah_decode_sleb128_32(&ptr, end, &arg));
-                parsed_code->u32_args[parsed_code->u32_arg_count++] = (uint32_t)arg;
+                wah_write_u32_le(bytecode_write_ptr, (uint32_t)arg);
+                bytecode_write_ptr += sizeof(uint32_t);
                 break;
             }
             case WAH_OP_I64_CONST: {
                 int64_t arg;
                 WAH_CHECK(wah_decode_sleb128_64(&ptr, end, &arg));
-                parsed_code->u64_args[parsed_code->u64_arg_count++] = (uint64_t)arg;
+                wah_write_u64_le(bytecode_write_ptr, (uint64_t)arg);
+                bytecode_write_ptr += sizeof(uint64_t);
                 break;
             }
             case WAH_OP_F32_CONST: {
-                parsed_code->u32_args[parsed_code->u32_arg_count++] = wah_read_u32_le(ptr);
+                wah_write_u32_le(bytecode_write_ptr, wah_read_u32_le(ptr));
                 ptr += 4;
+                bytecode_write_ptr += sizeof(float);
                 break;
             }
             case WAH_OP_F64_CONST: {
-                parsed_code->u64_args[parsed_code->u64_arg_count++] = wah_read_u64_le(ptr);
+                wah_write_u64_le(bytecode_write_ptr, wah_read_u64_le(ptr));
                 ptr += 8;
+                bytecode_write_ptr += sizeof(double);
                 break;
             }
             case WAH_OP_I32_LOAD: case WAH_OP_I64_LOAD: case WAH_OP_F32_LOAD: case WAH_OP_F64_LOAD:
@@ -1255,27 +1198,26 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
             case WAH_OP_I32_STORE8: case WAH_OP_I32_STORE16:
             case WAH_OP_I64_STORE8: case WAH_OP_I64_STORE16: case WAH_OP_I64_STORE32: {
                 uint32_t align_flags;
-                WAH_CHECK(wah_decode_uleb128(&ptr, end, &align_flags)); // align flags (read but not stored)
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &align_flags)); // Read and discard
                 uint32_t offset;
-                WAH_CHECK(wah_decode_uleb128(&ptr, end, &offset)); // offset
-                parsed_code->u32_args[parsed_code->u32_arg_count++] = offset;
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &offset));
+                wah_write_u32_le(bytecode_write_ptr, offset);
+                bytecode_write_ptr += sizeof(uint32_t);
                 break;
             }
             case WAH_OP_MEMORY_SIZE:
             case WAH_OP_MEMORY_GROW: {
                 uint32_t mem_idx;
-                WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // memory index (always 0x00)
-                // No argument to store
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // Read and discard
                 break;
             }
-            case WAH_OP_MEMORY_FILL: { // This is the remapped opcode
+            case WAH_OP_MEMORY_FILL: {
                 uint32_t mem_idx;
-                WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // memory index (always 0x00)
-                // No argument to store
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // Read and discard
                 break;
             }
             default:
-                // No arguments to store
+                // No arguments to store, bytecode_write_ptr already advanced by opcode size
                 break;
         }
     }
@@ -1285,12 +1227,24 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
 
 static void wah_free_parsed_code(wah_parsed_code_t *parsed_code) {
     if (!parsed_code) return;
-    free(parsed_code->opcodes);
-    free(parsed_code->u8_args);
-    free(parsed_code->u16_args);
-    free(parsed_code->u32_args);
-    free(parsed_code->u64_args);
-    memset(parsed_code, 0, sizeof(wah_parsed_code_t));
+    free(parsed_code->bytecode);
+}
+
+static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, uint16_t *opcode_val) {
+    if (*ptr >= end) {
+        return WAH_ERROR_UNEXPECTED_EOF;
+    }
+    uint8_t first_byte = *(*ptr)++;
+
+    if (first_byte > 0xF0) { // Multi-byte opcode prefix is remapped: F1 23 -> 1023, FC DEF -> CDEF
+        uint32_t sub_opcode_val;
+        WAH_CHECK(wah_decode_uleb128(ptr, end, &sub_opcode_val));
+        if (sub_opcode_val > 0xFFF) return WAH_ERROR_INVALID_LEB128; // Sub-opcode out of expected range
+        *opcode_val = (uint16_t)(((first_byte & 0x0F) << 12) | sub_opcode_val);
+    } else {
+        *opcode_val = (uint16_t)first_byte;
+    }
+    return WAH_OK;
 }
 
 wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah_module_t *module) {
@@ -1449,11 +1403,7 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, uint32_t func_idx, ui
     wah_call_frame_t *frame = &ctx->call_stack[ctx->call_depth++];
 
     frame->code = code_body;
-    frame->ip = code_body->parsed_code.opcodes;
-    frame->u8_arg_ptr = code_body->parsed_code.u8_args;
-    frame->u16_arg_ptr = code_body->parsed_code.u16_args;
-    frame->u32_arg_ptr = code_body->parsed_code.u32_args;
-    frame->u64_arg_ptr = code_body->parsed_code.u64_args;
+    frame->bytecode_ip = code_body->parsed_code.bytecode;
     frame->locals_offset = locals_offset;
     frame->func_idx = func_idx;
 
@@ -1463,9 +1413,7 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, uint32_t func_idx, ui
 #define RELOAD_FRAME() \
     do { \
         frame = &ctx->call_stack[ctx->call_depth - 1]; \
-        ip = frame->ip; \
-        u32_arg_ptr = frame->u32_arg_ptr; \
-        u64_arg_ptr = frame->u64_arg_ptr; \
+        bytecode_ip = frame->bytecode_ip; \
     } while(0)
 
 static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
@@ -1473,68 +1421,75 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 
     // These are pointers to the current frame's state for faster access.
     wah_call_frame_t *frame;
-    const uint16_t *ip;
-    const uint32_t *u32_arg_ptr;
-    const uint64_t *u64_arg_ptr;
+    const uint8_t *bytecode_ip;
 
     RELOAD_FRAME(); // Initial frame load
 
     while (ctx->call_depth > 0) { // Loop while there are active call frames
-        uint16_t opcode = *ip++;
+        uint16_t opcode = wah_read_u16_le(bytecode_ip);
+        bytecode_ip += sizeof(uint16_t);
 
         switch (opcode) {
             case WAH_OP_I32_CONST: {
-                ctx->value_stack[ctx->sp++].i32 = (int32_t)*u32_arg_ptr++;
+                ctx->value_stack[ctx->sp++].i32 = (int32_t)wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
                 break;
             }
             case WAH_OP_I64_CONST: {
-                ctx->value_stack[ctx->sp++].i64 = (int64_t)*u64_arg_ptr++;
+                ctx->value_stack[ctx->sp++].i64 = (int64_t)wah_read_u64_le(bytecode_ip);
+                bytecode_ip += sizeof(uint64_t);
                 break;
             }
             case WAH_OP_F32_CONST: {
-                memcpy(&ctx->value_stack[ctx->sp++].f32, u32_arg_ptr++, 4);
+                ctx->value_stack[ctx->sp++].f32 = wah_read_f32_le(bytecode_ip);
+                bytecode_ip += sizeof(float);
                 break;
             }
             case WAH_OP_F64_CONST: {
-                memcpy(&ctx->value_stack[ctx->sp++].f64, u64_arg_ptr++, 8);
+                ctx->value_stack[ctx->sp++].f64 = wah_read_f64_le(bytecode_ip);
+                bytecode_ip += sizeof(double);
                 break;
             }
             case WAH_OP_LOCAL_GET: {
-                uint32_t local_idx = *u32_arg_ptr++;
+                uint32_t local_idx = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
                 ctx->value_stack[ctx->sp++] = ctx->value_stack[frame->locals_offset + local_idx];
                 break;
             }
             case WAH_OP_LOCAL_SET: {
-                uint32_t local_idx = *u32_arg_ptr++;
+                uint32_t local_idx = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
                 ctx->value_stack[frame->locals_offset + local_idx] = ctx->value_stack[--ctx->sp];
                 break;
             }
             case WAH_OP_LOCAL_TEE: {
-                uint32_t local_idx = *u32_arg_ptr++;
+                uint32_t local_idx = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
                 wah_value_t val = ctx->value_stack[ctx->sp - 1];
                 ctx->value_stack[frame->locals_offset + local_idx] = val;
                 break;
             }
             case WAH_OP_GLOBAL_GET: {
-                uint32_t global_idx = *u32_arg_ptr++;
+                uint32_t global_idx = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
                 ctx->value_stack[ctx->sp++].i32 = ctx->globals[global_idx].i32;
                 break;
             }
             case WAH_OP_GLOBAL_SET: {
-                uint32_t global_idx = *u32_arg_ptr++;
+                uint32_t global_idx = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
                 ctx->globals[global_idx].i32 = ctx->value_stack[--ctx->sp].i32;
                 break;
             }
             case WAH_OP_CALL: {
-                uint32_t called_func_idx = *u32_arg_ptr++;
+                uint32_t called_func_idx = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
                 const wah_func_type_t *called_func_type = &ctx->module->types[ctx->module->function_type_indices[called_func_idx]];
                 const wah_code_body_t *called_code = &ctx->module->code_bodies[called_func_idx];
 
                 uint32_t new_locals_offset = ctx->sp - called_func_type->param_count;
                 
-                frame->ip = ip;
-                frame->u32_arg_ptr = u32_arg_ptr;
-                frame->u64_arg_ptr = u64_arg_ptr;
+                frame->bytecode_ip = bytecode_ip;
 
                 err = wah_push_frame(ctx, called_func_idx, new_locals_offset);
                 if (err != WAH_OK) goto cleanup;
@@ -1658,7 +1613,8 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             case WAH_OP_F##N##_GE: CMP_F(N,>=)
 
 #define LOAD_OP(N, value_field, cast) { \
-                uint32_t offset = *u32_arg_ptr++; \
+                uint32_t offset = wah_read_u32_le(bytecode_ip); \
+                bytecode_ip += sizeof(uint32_t); \
                 uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32; \
                 uint32_t effective_addr = addr + offset; \
                 \
@@ -1671,7 +1627,8 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             }
 
 #define STORE_OP(N, value_field, value_type, cast) { \
-                uint32_t offset = *u32_arg_ptr++; \
+                uint32_t offset = wah_read_u32_le(bytecode_ip); \
+                bytecode_ip += sizeof(uint32_t); \
                 value_type val = cast ctx->value_stack[--ctx->sp].value_field; \
                 uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32; \
                 uint32_t effective_addr = addr + offset; \
@@ -1793,9 +1750,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 cleanup:
     // Before returning, store the final IP back into the (potentially last) frame
     if (ctx->call_depth > 0) {
-        frame->ip = ip;
-        frame->u32_arg_ptr = u32_arg_ptr;
-        frame->u64_arg_ptr = u64_arg_ptr;
+        frame->bytecode_ip = bytecode_ip;
     }
     return err;
 }
