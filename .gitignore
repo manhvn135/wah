@@ -4,4 +4,5 @@ test_new_ops
 test_traps
 test_wah
 test_control_flow
+test_determinism
 .claude

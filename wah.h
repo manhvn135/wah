@@ -207,6 +207,24 @@ static inline double wah_read_f64_le(const uint8_t *ptr) {
     return u.d;
 }
 
+// Helper to write a float to a byte array in little-endian format
+static inline void wah_write_f32_le(uint8_t *ptr, float val) {
+    union {
+        uint32_t i;
+        float f;
+    } u = {.f = val};
+    wah_write_u32_le(ptr, u.i);
+}
+
+// Helper to write a double to a byte array in little-endian format
+static inline void wah_write_f64_le(uint8_t *ptr, double val) {
+    union {
+        uint64_t i;
+        double f;
+    } u = {.f = val};
+    wah_write_u64_le(ptr, u.i);
+}
+
 
 // --- WebAssembly Types ---
 typedef enum {
@@ -383,24 +401,16 @@ typedef struct {
 
 // --- Module Structure ---
 typedef struct wah_module_s {
-    // Type Section
     uint32_t type_count;
-    wah_func_type_t *types;
-
-    // Function Section
     uint32_t function_count;
-    uint32_t *function_type_indices; // Index into the types array
-
-    // Code Section
     uint32_t code_count;
-    wah_code_body_t *code_bodies;
-
-    // Global Section
     uint32_t global_count;
-    wah_global_t *globals;
-
-    // Memory Section
     uint32_t memory_count;
+
+    wah_func_type_t *types;
+    uint32_t *function_type_indices; // Index into the types array
+    wah_code_body_t *code_bodies;
+    wah_global_t *globals;
     wah_memory_type_t *memories;
 
     // Add other sections as they are implemented
@@ -469,6 +479,53 @@ void wah_free_module(wah_module_t *module);
 #include <stdlib.h> // For malloc, free
 #include <assert.h> // For assert
 #include <stdint.h> // For INT32_MIN, INT32_MAX
+
+// WebAssembly canonical NaN bit patterns
+#define WASM_F32_CANONICAL_NAN_BITS 0x7fc00000U
+#define WASM_F64_CANONICAL_NAN_BITS 0x7ff8000000000000ULL
+
+// Function to canonicalize a float NaN
+static inline float wah_canonicalize_f32(float val) {
+    // Check for NaN using val != val (IEEE 754 property)
+    if (val != val) {
+        uint32_t bits;
+        memcpy(&bits, &val, sizeof(uint32_t));
+        uint32_t sign_bit = bits & 0x80000000U; // Extract sign bit
+        bits = sign_bit | WASM_F32_CANONICAL_NAN_BITS; // Combine sign with canonical NaN
+        memcpy(&val, &bits, sizeof(uint32_t));
+    }
+    return val;
+}
+
+// Function to canonicalize a double NaN
+static inline double wah_canonicalize_f64(double val) {
+    // Check for NaN using val != val (IEEE 754 property)
+    if (val != val) {
+        uint64_t bits;
+        memcpy(&bits, &val, sizeof(uint64_t));
+        uint64_t sign_bit = bits & 0x8000000000000000ULL; // Extract sign bit
+        bits = sign_bit | WASM_F64_CANONICAL_NAN_BITS; // Combine sign with canonical NaN
+        memcpy(&val, &bits, sizeof(uint64_t));
+    }
+    return val;
+}
+
+// Helper to canonicalize f32 and return its bit pattern as uint32_t
+static inline uint32_t wah_canonicalize_f32_as_u32(float val) {
+    val = wah_canonicalize_f32(val); // Canonicalize the float value
+    uint32_t bits;
+    memcpy(&bits, &val, sizeof(uint32_t)); // Get its bit pattern
+    return bits;
+}
+
+// Helper to canonicalize f64 and return its bit pattern as uint64_t
+static inline uint64_t wah_canonicalize_f64_as_u64(double val) {
+    val = wah_canonicalize_f64(val); // Canonicalize the double value
+    uint64_t bits;
+    memcpy(&bits, &val, sizeof(uint64_t)); // Get its bit pattern
+    return bits;
+}
+
 
 // --- Helper Macros ---
 #define WAH_CHECK(expr) do { \
@@ -1127,13 +1184,13 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
             }
             case WAH_OP_F32_CONST: {
                 if (*ptr + 4 > section_end) return WAH_ERROR_UNEXPECTED_EOF;
-                module->globals[i].initial_value.f32 = wah_read_f32_le(*ptr);
+                module->globals[i].initial_value.f32 = wah_canonicalize_f32(wah_read_f32_le(*ptr));
                 *ptr += 4;
                 break;
             }
             case WAH_OP_F64_CONST: {
                 if (*ptr + 8 > section_end) return WAH_ERROR_UNEXPECTED_EOF;
-                module->globals[i].initial_value.f64 = wah_read_f64_le(*ptr);
+                module->globals[i].initial_value.f64 = wah_canonicalize_f64(wah_read_f64_le(*ptr));
                 *ptr += 8;
                 break;
             }
@@ -1679,12 +1736,12 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 break;
             }
             case WAH_OP_F32_CONST: {
-                ctx->value_stack[ctx->sp++].f32 = wah_read_f32_le(bytecode_ip);
+                ctx->value_stack[ctx->sp++].f32 = wah_canonicalize_f32(wah_read_f32_le(bytecode_ip));
                 bytecode_ip += sizeof(float);
                 break;
             }
             case WAH_OP_F64_CONST: {
-                ctx->value_stack[ctx->sp++].f64 = wah_read_f64_le(bytecode_ip);
+                ctx->value_stack[ctx->sp++].f64 = wah_canonicalize_f64(wah_read_f64_le(bytecode_ip));
                 bytecode_ip += sizeof(double);
                 break;
             }
@@ -1850,7 +1907,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             case WAH_OP_F##N##_LE: CMP_F(N,<=) \
             case WAH_OP_F##N##_GE: CMP_F(N,>=)
 
-#define LOAD_OP(N, value_field, cast) { \
+#define LOAD_OP(N, T, value_field, cast) { \
                 uint32_t offset = wah_read_u32_le(bytecode_ip); \
                 bytecode_ip += sizeof(uint32_t); \
                 uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32; \
@@ -1860,14 +1917,14 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                     err = WAH_ERROR_MEMORY_OUT_OF_BOUNDS; \
                     goto cleanup; \
                 } \
-                ctx->value_stack[ctx->sp++].value_field = cast wah_read_u##N##_le(ctx->memory_base + effective_addr); \
+                ctx->value_stack[ctx->sp++].value_field = cast wah_read_##T##_le(ctx->memory_base + effective_addr); \
                 break; \
             }
 
-#define STORE_OP(N, value_field, value_type, cast) { \
+#define STORE_OP(N, T, value_field, value_type, cast) { \
                 uint32_t offset = wah_read_u32_le(bytecode_ip); \
                 bytecode_ip += sizeof(uint32_t); \
-                value_type val = cast ctx->value_stack[--ctx->sp].value_field; \
+                value_type val = ctx->value_stack[--ctx->sp].value_field; \
                 uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32; \
                 uint64_t effective_addr = (uint64_t)addr + offset; \
                 \
@@ -1875,37 +1932,37 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                     err = WAH_ERROR_MEMORY_OUT_OF_BOUNDS; \
                     goto cleanup; \
                 } \
-                wah_write_u##N##_le(ctx->memory_base + effective_addr, cast val); \
+                wah_write_##T##_le(ctx->memory_base + effective_addr, cast (val)); \
                 break; \
             }
 
             NUM_OPS(32)
             NUM_OPS(64)
 
-            case WAH_OP_I32_LOAD: LOAD_OP(32, i32, (int32_t))
-            case WAH_OP_I64_LOAD: LOAD_OP(64, i64, (int64_t))
-            case WAH_OP_F32_LOAD: LOAD_OP(32, f32, )
-            case WAH_OP_F64_LOAD: LOAD_OP(64, f64, )
-            case WAH_OP_I32_LOAD8_S: LOAD_OP(8, i32, (int32_t)(int8_t))
-            case WAH_OP_I32_LOAD8_U: LOAD_OP(8, i32, (int32_t))
-            case WAH_OP_I32_LOAD16_S: LOAD_OP(16, i32, (int32_t)(int16_t))
-            case WAH_OP_I32_LOAD16_U: LOAD_OP(16, i32, (int32_t))
-            case WAH_OP_I64_LOAD8_S: LOAD_OP(8, i64, (int64_t)(int8_t))
-            case WAH_OP_I64_LOAD8_U: LOAD_OP(8, i64, (int64_t))
-            case WAH_OP_I64_LOAD16_S: LOAD_OP(16, i64, (int64_t)(int16_t))
-            case WAH_OP_I64_LOAD16_U: LOAD_OP(16, i64, (int64_t))
-            case WAH_OP_I64_LOAD32_S: LOAD_OP(32, i64, (int64_t)(int32_t))
-            case WAH_OP_I64_LOAD32_U: LOAD_OP(32, i64, (int64_t))
+            case WAH_OP_I32_LOAD: LOAD_OP(32, u32, i32, (int32_t))
+            case WAH_OP_I64_LOAD: LOAD_OP(64, u64, i64, (int64_t))
+            case WAH_OP_F32_LOAD: LOAD_OP(32, f32, f32, )
+            case WAH_OP_F64_LOAD: LOAD_OP(64, f64, f64, )
+            case WAH_OP_I32_LOAD8_S: LOAD_OP(8, u8, i32, (int32_t)(int8_t))
+            case WAH_OP_I32_LOAD8_U: LOAD_OP(8, u8, i32, (int32_t))
+            case WAH_OP_I32_LOAD16_S: LOAD_OP(16, u16, i32, (int32_t)(int16_t))
+            case WAH_OP_I32_LOAD16_U: LOAD_OP(16, u16, i32, (int32_t))
+            case WAH_OP_I64_LOAD8_S: LOAD_OP(8, u8, i64, (int64_t)(int8_t))
+            case WAH_OP_I64_LOAD8_U: LOAD_OP(8, u8, i64, (int64_t))
+            case WAH_OP_I64_LOAD16_S: LOAD_OP(16, u16, i64, (int64_t)(int16_t))
+            case WAH_OP_I64_LOAD16_U: LOAD_OP(16, u16, i64, (int64_t))
+            case WAH_OP_I64_LOAD32_S: LOAD_OP(32, u32, i64, (int64_t)(int32_t))
+            case WAH_OP_I64_LOAD32_U: LOAD_OP(32, u32, i64, (int64_t))
 
-            case WAH_OP_I32_STORE: STORE_OP(32, i32, int32_t, (uint32_t))
-            case WAH_OP_I64_STORE: STORE_OP(64, i64, int64_t, (uint64_t))
-            case WAH_OP_F32_STORE: STORE_OP(32, f32, float, )
-            case WAH_OP_F64_STORE: STORE_OP(64, f64, double, )
-            case WAH_OP_I32_STORE8: STORE_OP(8, i32, int32_t, (uint8_t))
-            case WAH_OP_I32_STORE16: STORE_OP(16, i32, int32_t, (uint16_t))
-            case WAH_OP_I64_STORE8: STORE_OP(8, i64, int64_t, (uint8_t))
-            case WAH_OP_I64_STORE16: STORE_OP(16, i64, int64_t, (uint16_t))
-            case WAH_OP_I64_STORE32: STORE_OP(32, i64, int64_t, (uint32_t))
+            case WAH_OP_I32_STORE: STORE_OP(32, u32, i32, int32_t, (uint32_t))
+            case WAH_OP_I64_STORE: STORE_OP(64, u64, i64, int64_t, (uint64_t))
+            case WAH_OP_F32_STORE: STORE_OP(32, f32, f32, float, wah_canonicalize_f32)
+            case WAH_OP_F64_STORE: STORE_OP(64, f64, f64, double, wah_canonicalize_f64)
+            case WAH_OP_I32_STORE8: STORE_OP(8, u8, i32, int32_t, (uint8_t))
+            case WAH_OP_I32_STORE16: STORE_OP(16, u16, i32, int32_t, (uint16_t))
+            case WAH_OP_I64_STORE8: STORE_OP(8, u8, i64, int64_t, (uint8_t))
+            case WAH_OP_I64_STORE16: STORE_OP(16, u16, i64, int64_t, (uint16_t))
+            case WAH_OP_I64_STORE32: STORE_OP(32, u32, i64, int64_t, (uint32_t))
 
 #undef NUM_OPS
 #undef LOAD_OP
