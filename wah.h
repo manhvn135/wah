@@ -268,7 +268,7 @@ typedef enum {
     // Constants
     WAH_OP_I32_CONST = 0x41, WAH_OP_I64_CONST = 0x42, WAH_OP_F32_CONST = 0x43, WAH_OP_F64_CONST = 0x44,
 
-    // Numeric Operators
+    // Comparison Operators
     WAH_OP_I32_EQZ = 0x45, WAH_OP_I32_EQ = 0x46, WAH_OP_I32_NE = 0x47,
     WAH_OP_I32_LT_S = 0x48, WAH_OP_I32_LT_U = 0x49, WAH_OP_I32_GT_S = 0x4A, WAH_OP_I32_GT_U = 0x4B,
     WAH_OP_I32_LE_S = 0x4C, WAH_OP_I32_LE_U = 0x4D, WAH_OP_I32_GE_S = 0x4E, WAH_OP_I32_GE_U = 0x4F,
@@ -279,16 +279,28 @@ typedef enum {
     WAH_OP_F32_LT = 0x5D, WAH_OP_F32_GT = 0x5E, WAH_OP_F32_LE = 0x5F, WAH_OP_F32_GE = 0x60,
     WAH_OP_F64_EQ = 0x61, WAH_OP_F64_NE = 0x62,
     WAH_OP_F64_LT = 0x63, WAH_OP_F64_GT = 0x64, WAH_OP_F64_LE = 0x65, WAH_OP_F64_GE = 0x66,
+
+    // Numeric Operators
+    WAH_OP_I32_CLZ = 0x67, WAH_OP_I32_CTZ = 0x68, WAH_OP_I32_POPCNT = 0x69,
     WAH_OP_I32_ADD = 0x6A, WAH_OP_I32_SUB = 0x6B, WAH_OP_I32_MUL = 0x6C,
     WAH_OP_I32_DIV_S = 0x6D, WAH_OP_I32_DIV_U = 0x6E, WAH_OP_I32_REM_S = 0x6F, WAH_OP_I32_REM_U = 0x70,
     WAH_OP_I32_AND = 0x71, WAH_OP_I32_OR = 0x72, WAH_OP_I32_XOR = 0x73,
     WAH_OP_I32_SHL = 0x74, WAH_OP_I32_SHR_S = 0x75, WAH_OP_I32_SHR_U = 0x76,
+    WAH_OP_I32_ROTL = 0x77, WAH_OP_I32_ROTR = 0x78,
+    WAH_OP_I64_CLZ = 0x79, WAH_OP_I64_CTZ = 0x7A, WAH_OP_I64_POPCNT = 0x7B,
     WAH_OP_I64_ADD = 0x7C, WAH_OP_I64_SUB = 0x7D, WAH_OP_I64_MUL = 0x7E,
     WAH_OP_I64_DIV_S = 0x7F, WAH_OP_I64_DIV_U = 0x80, WAH_OP_I64_REM_S = 0x81, WAH_OP_I64_REM_U = 0x82,
     WAH_OP_I64_AND = 0x83, WAH_OP_I64_OR = 0x84, WAH_OP_I64_XOR = 0x85,
     WAH_OP_I64_SHL = 0x86, WAH_OP_I64_SHR_S = 0x87, WAH_OP_I64_SHR_U = 0x88,
+    WAH_OP_I64_ROTL = 0x89, WAH_OP_I64_ROTR = 0x8A,
+    WAH_OP_F32_ABS = 0x8B, WAH_OP_F32_NEG = 0x8C, WAH_OP_F32_CEIL = 0x8D, WAH_OP_F32_FLOOR = 0x8E,
+    WAH_OP_F32_TRUNC = 0x8F, WAH_OP_F32_NEAREST = 0x90, WAH_OP_F32_SQRT = 0x91,
     WAH_OP_F32_ADD = 0x92, WAH_OP_F32_SUB = 0x93, WAH_OP_F32_MUL = 0x94, WAH_OP_F32_DIV = 0x95,
+    WAH_OP_F32_MIN = 0x96, WAH_OP_F32_MAX = 0x97, WAH_OP_F32_COPYSIGN = 0x98,
+    WAH_OP_F64_ABS = 0x99, WAH_OP_F64_NEG = 0x9A, WAH_OP_F64_CEIL = 0x9B, WAH_OP_F64_FLOOR = 0x9C,
+    WAH_OP_F64_TRUNC = 0x9D, WAH_OP_F64_NEAREST = 0x9E, WAH_OP_F64_SQRT = 0x9F,
     WAH_OP_F64_ADD = 0xA0, WAH_OP_F64_SUB = 0xA1, WAH_OP_F64_MUL = 0xA2, WAH_OP_F64_DIV = 0xA3,
+    WAH_OP_F64_MIN = 0xA4, WAH_OP_F64_MAX = 0xA5, WAH_OP_F64_COPYSIGN = 0xA6,
 } wah_opcode_t;
 
 // --- WebAssembly Value Representation ---
@@ -479,6 +491,10 @@ void wah_free_module(wah_module_t *module);
 #include <stdlib.h> // For malloc, free
 #include <assert.h> // For assert
 #include <stdint.h> // For INT32_MIN, INT32_MAX
+#include <math.h> // For floating-point functions
+#if defined(_MSC_VER)
+#include <intrin.h> // For MSVC intrinsics
+#endif
 
 // WebAssembly canonical NaN bit patterns
 #define WASM_F32_CANONICAL_NAN_BITS 0x7fc00000U
@@ -510,22 +526,214 @@ static inline double wah_canonicalize_f64(double val) {
     return val;
 }
 
-// Helper to canonicalize f32 and return its bit pattern as uint32_t
-static inline uint32_t wah_canonicalize_f32_as_u32(float val) {
-    val = wah_canonicalize_f32(val); // Canonicalize the float value
-    uint32_t bits;
-    memcpy(&bits, &val, sizeof(uint32_t)); // Get its bit pattern
-    return bits;
+// --- Integer Utility Functions ---
+
+// popcnt
+static inline uint32_t wah_popcount_u32(uint32_t n) {
+#ifdef __GNUC__
+    return __builtin_popcount(n);
+#elif defined(_MSC_VER)
+    return __popcnt(n);
+#else
+    // Generic software implementation
+    uint32_t count = 0;
+    while (n > 0) {
+        n &= (n - 1);
+        count++;
+    }
+    return count;
+#endif
 }
 
-// Helper to canonicalize f64 and return its bit pattern as uint64_t
-static inline uint64_t wah_canonicalize_f64_as_u64(double val) {
-    val = wah_canonicalize_f64(val); // Canonicalize the double value
-    uint64_t bits;
-    memcpy(&bits, &val, sizeof(uint64_t)); // Get its bit pattern
-    return bits;
+static inline uint64_t wah_popcount_u64(uint64_t n) {
+#ifdef __GNUC__
+    return __builtin_popcountll(n);
+#elif defined(_MSC_VER)
+    return __popcnt64(n);
+#else
+    // Generic software implementation
+    uint64_t count = 0;
+    while (n > 0) {
+        n &= (n - 1);
+        count++;
+    }
+    return count;
+#endif
 }
 
+// clz (count leading zeros)
+static inline uint32_t wah_clz_u32(uint32_t n) {
+#ifdef __GNUC__
+    return n == 0 ? 32 : __builtin_clz(n);
+#elif defined(_MSC_VER)
+    unsigned long index;
+    if (_BitScanReverse(&index, n)) {
+        return 31 - index;
+    } else {
+        return 32; // All bits are zero
+    }
+#else
+    // Generic software implementation
+    if (n == 0) return 32;
+    uint32_t count = 0;
+    if (n <= 0x0000FFFF) { count += 16; n <<= 16; }
+    if (n <= 0x00FFFFFF) { count += 8; n <<= 8; }
+    if (n <= 0x0FFFFFFF) { count += 4; n <<= 4; }
+    if (n <= 0x3FFFFFFF) { count += 2; n <<= 2; }
+    if (n <= 0x7FFFFFFF) { count += 1; }
+    return count;
+#endif
+}
+
+static inline uint64_t wah_clz_u64(uint64_t n) {
+#ifdef __GNUC__
+    return n == 0 ? 64 : __builtin_clzll(n);
+#elif defined(_MSC_VER)
+    unsigned long index;
+    if (_BitScanReverse64(&index, n)) {
+        return 63 - index;
+    } else {
+        return 64; // All bits are zero
+    }
+#else
+    // Generic software implementation
+    if (n == 0) return 64;
+    uint64_t count = 0;
+    if (n <= 0x00000000FFFFFFFFULL) { count += 32; n <<= 32; }
+    if (n <= 0x0000FFFFFFFFFFFFULL) { count += 16; n <<= 16; }
+    if (n <= 0x00FFFFFFFFFFFFFFULL) { count += 8; n <<= 8; }
+    if (n <= 0x0FFFFFFFFFFFFFFFULL) { count += 4; n <<= 4; }
+    if (n <= 0x3FFFFFFFFFFFFFFFULL) { count += 2; n <<= 2; }
+    if (n <= 0x7FFFFFFFFFFFFFFFULL) { count += 1; }
+    return count;
+#endif
+}
+
+// ctz (count trailing zeros)
+static inline uint32_t wah_ctz_u32(uint32_t n) {
+#ifdef __GNUC__
+    return n == 0 ? 32 : __builtin_ctz(n);
+#elif defined(_MSC_VER)
+    unsigned long index;
+    if (_BitScanForward(&index, n)) {
+        return index;
+    } else {
+        return 32; // All bits are zero
+    }
+#else
+    // Generic software implementation
+    if (n == 0) return 32;
+    uint32_t count = 0;
+    while ((n & 1) == 0) {
+        n >>= 1;
+        count++;
+    }
+    return count;
+#endif
+}
+
+static inline uint64_t wah_ctz_u64(uint64_t n) {
+#ifdef __GNUC__
+    return n == 0 ? 64 : __builtin_ctzll(n);
+#elif defined(_MSC_VER)
+    unsigned long index;
+    if (_BitScanForward64(&index, n)) {
+        return index;
+    } else {
+        return 64; // All bits are zero
+    }
+#else
+    // Generic software implementation
+    if (n == 0) return 64;
+    uint64_t count = 0;
+    while ((n & 1) == 0) {
+        n >>= 1;
+        count++;
+    }
+    return count;
+#endif
+}
+
+// rotl (rotate left)
+static inline uint32_t wah_rotl_u32(uint32_t n, uint32_t shift) {
+#ifdef __clang__
+    return __builtin_rotateleft32(n, shift);
+#elif defined(_MSC_VER)
+    return _rotl(n, shift);
+#else
+    shift &= 31; // Ensure shift is within 0-31
+    return (n << shift) | (n >> (32 - shift));
+#endif
+}
+
+static inline uint64_t wah_rotl_u64(uint64_t n, uint64_t shift) {
+#ifdef __clang__
+    return __builtin_rotateleft64(n, shift);
+#elif defined(_MSC_VER)
+    return _rotl64(n, shift);
+#else
+    shift &= 63; // Ensure shift is within 0-63
+    return (n << shift) | (n >> (64 - shift));
+#endif
+}
+
+// rotr (rotate right)
+static inline uint32_t wah_rotr_u32(uint32_t n, uint32_t shift) {
+#ifdef __clang__
+    return __builtin_rotateright32(n, shift);
+#elif defined(_MSC_VER)
+    return _rotr(n, shift);
+#else
+    shift &= 31; // Ensure shift is within 0-31
+    return (n >> shift) | (n << (32 - shift));
+#endif
+}
+
+static inline uint64_t wah_rotr_u64(uint64_t n, uint64_t shift) {
+#ifdef __clang__
+    return __builtin_rotateright64(n, shift);
+#elif defined(_MSC_VER)
+    return _rotr64(n, shift);
+#else
+    shift &= 63; // Ensure shift is within 0-63
+    return (n >> shift) | (n << (64 - shift));
+#endif
+}
+
+// nearest (round to nearest, ties to even)
+static inline float wah_nearest_f32(float f) {
+#ifdef __clang__
+    return __builtin_roundevenf(f);
+#else
+    if (isnan(f) || isinf(f) || f == 0.0f) {
+        return f;
+    }
+    float rounded = roundf(f);
+    if (fabsf(f - rounded) == 0.5f) {
+        if (((long long)rounded % 2) != 0) {
+            return rounded - copysignf(1.0f, f);
+        }
+    }
+    return rounded;
+#endif
+}
+
+static inline double wah_nearest_f64(double d) {
+#ifdef __clang__
+    return __builtin_roundeven(d);
+#else
+    if (isnan(d) || isinf(d) || d == 0.0) {
+        return d;
+    }
+    double rounded = round(d);
+    if (fabs(d - rounded) == 0.5) {
+        if (((long long)rounded % 2) != 0) {
+            return rounded - copysign(1.0, d);
+        }
+    }
+    return rounded;
+#endif
+}
 
 // --- Helper Macros ---
 #define WAH_CHECK(expr) do { \
@@ -883,6 +1091,42 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         NUM_OPS(64)
 
 #undef NUM_OPS
+
+#define UNARY_OP(T) { \
+    wah_val_type_t type; \
+    WAH_CHECK(wah_validation_pop_type(vctx, &type)); \
+    if (type != WAH_VAL_TYPE_##T) return WAH_ERROR_VALIDATION_FAILED; \
+    return wah_validation_push_type(vctx, WAH_VAL_TYPE_##T); \
+}
+
+#define BINARY_OP(T) { \
+    wah_val_type_t type1, type2; \
+    WAH_CHECK(wah_validation_pop_type(vctx, &type1)); \
+    WAH_CHECK(wah_validation_pop_type(vctx, &type2)); \
+    if (type1 != WAH_VAL_TYPE_##T || type2 != WAH_VAL_TYPE_##T) return WAH_ERROR_VALIDATION_FAILED; \
+    return wah_validation_push_type(vctx, WAH_VAL_TYPE_##T); \
+}
+
+        // Integer Unary Operations
+        case WAH_OP_I32_CLZ: case WAH_OP_I32_CTZ: case WAH_OP_I32_POPCNT: UNARY_OP(I32)
+        case WAH_OP_I64_CLZ: case WAH_OP_I64_CTZ: case WAH_OP_I64_POPCNT: UNARY_OP(I64)
+
+        // Integer Binary Operations
+        case WAH_OP_I32_ROTL: case WAH_OP_I32_ROTR: BINARY_OP(I32)
+        case WAH_OP_I64_ROTL: case WAH_OP_I64_ROTR: BINARY_OP(I64)
+
+        // Floating-Point Unary Operations
+        case WAH_OP_F32_ABS: case WAH_OP_F32_NEG: case WAH_OP_F32_CEIL: case WAH_OP_F32_FLOOR:
+        case WAH_OP_F32_TRUNC: case WAH_OP_F32_NEAREST: case WAH_OP_F32_SQRT: UNARY_OP(F32)
+        case WAH_OP_F64_ABS: case WAH_OP_F64_NEG: case WAH_OP_F64_CEIL: case WAH_OP_F64_FLOOR:
+        case WAH_OP_F64_TRUNC: case WAH_OP_F64_NEAREST: case WAH_OP_F64_SQRT: UNARY_OP(F64)
+
+        // Floating-Point Binary Operations
+        case WAH_OP_F32_MIN: case WAH_OP_F32_MAX: case WAH_OP_F32_COPYSIGN: BINARY_OP(F32)
+        case WAH_OP_F64_MIN: case WAH_OP_F64_MAX: case WAH_OP_F64_COPYSIGN: BINARY_OP(F64)
+
+#undef UNARY_OP
+#undef BINARY_OP
 
         // Parametric operations
         case WAH_OP_DROP: {
@@ -1967,6 +2211,73 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 #undef NUM_OPS
 #undef LOAD_OP
 #undef STORE_OP
+
+#define UNARY_INT_OP(N, func) { \
+    ctx->value_stack[ctx->sp - 1].i##N = (int##N##_t)func((uint##N##_t)ctx->value_stack[ctx->sp - 1].i##N); \
+    break; \
+}
+
+#define BINARY_INT_OP(N, func) { \
+    VSTACK_A.i##N = (int##N##_t)func((uint##N##_t)VSTACK_A.i##N, (uint##N##_t)VSTACK_B.i##N); \
+    ctx->sp--; \
+    break; \
+}
+
+#define UNARY_FLOAT_OP(N, func) { \
+    ctx->value_stack[ctx->sp - 1].f##N = func(ctx->value_stack[ctx->sp - 1].f##N); \
+    break; \
+}
+
+#define BINARY_FLOAT_OP(N, func) { \
+    VSTACK_A.f##N = func(VSTACK_A.f##N, VSTACK_B.f##N); \
+    ctx->sp--; \
+    break; \
+}
+
+            // Integer Unary Operations
+            case WAH_OP_I32_CLZ: UNARY_INT_OP(32, wah_clz_u32)
+            case WAH_OP_I32_CTZ: UNARY_INT_OP(32, wah_ctz_u32)
+            case WAH_OP_I32_POPCNT: UNARY_INT_OP(32, wah_popcount_u32)
+            case WAH_OP_I64_CLZ: UNARY_INT_OP(64, wah_clz_u64)
+            case WAH_OP_I64_CTZ: UNARY_INT_OP(64, wah_ctz_u64)
+            case WAH_OP_I64_POPCNT: UNARY_INT_OP(64, wah_popcount_u64)
+
+            // Integer Binary Operations
+            case WAH_OP_I32_ROTL: BINARY_INT_OP(32, wah_rotl_u32)
+            case WAH_OP_I32_ROTR: BINARY_INT_OP(32, wah_rotr_u32)
+            case WAH_OP_I64_ROTL: BINARY_INT_OP(64, wah_rotl_u64)
+            case WAH_OP_I64_ROTR: BINARY_INT_OP(64, wah_rotr_u64)
+
+            // Floating-Point Unary Operations
+            case WAH_OP_F32_ABS: UNARY_FLOAT_OP(32, fabsf)
+            case WAH_OP_F32_NEG: UNARY_FLOAT_OP(32, -)
+            case WAH_OP_F32_CEIL: UNARY_FLOAT_OP(32, ceilf)
+            case WAH_OP_F32_FLOOR: UNARY_FLOAT_OP(32, floorf)
+            case WAH_OP_F32_TRUNC: UNARY_FLOAT_OP(32, truncf)
+            case WAH_OP_F32_NEAREST: UNARY_FLOAT_OP(32, wah_nearest_f32)
+            case WAH_OP_F32_SQRT: UNARY_FLOAT_OP(32, sqrtf)
+
+            case WAH_OP_F64_ABS: UNARY_FLOAT_OP(64, fabs)
+            case WAH_OP_F64_NEG: UNARY_FLOAT_OP(64, -)
+            case WAH_OP_F64_CEIL: UNARY_FLOAT_OP(64, ceil)
+            case WAH_OP_F64_FLOOR: UNARY_FLOAT_OP(64, floor)
+            case WAH_OP_F64_TRUNC: UNARY_FLOAT_OP(64, trunc)
+            case WAH_OP_F64_NEAREST: UNARY_FLOAT_OP(64, wah_nearest_f64)
+            case WAH_OP_F64_SQRT: UNARY_FLOAT_OP(64, sqrt)
+
+            // Floating-Point Binary Operations
+            case WAH_OP_F32_MIN: BINARY_FLOAT_OP(32, fminf)
+            case WAH_OP_F32_MAX: BINARY_FLOAT_OP(32, fmaxf)
+            case WAH_OP_F32_COPYSIGN: BINARY_FLOAT_OP(32, copysignf)
+
+            case WAH_OP_F64_MIN: BINARY_FLOAT_OP(64, fmin)
+            case WAH_OP_F64_MAX: BINARY_FLOAT_OP(64, fmax)
+            case WAH_OP_F64_COPYSIGN: BINARY_FLOAT_OP(64, copysign)
+
+#undef UNARY_INT_OP
+#undef BINARY_INT_OP
+#undef UNARY_FLOAT_OP
+#undef BINARY_FLOAT_OP
 
             case WAH_OP_MEMORY_SIZE: {
                 // memory index (always 0x00) is consumed by preparse, no need to read here
