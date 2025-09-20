@@ -203,7 +203,7 @@ int main() {
     // Test 8: Parse new module for memory operations
     err = wah_parse_module(wasm_binary_memory_ops_test, sizeof(wasm_binary_memory_ops_test), &module);
     if (err != WAH_OK) {
-        printf("Failed to parse memory ops module. Error: %d\n", err);
+        printf("Failed to parse memory ops module. Error: %s\n", wah_strerror(err));
     }
     assert(err == WAH_OK && "Failed to parse memory ops module");
     printf("Memory ops module parsed successfully.\n");

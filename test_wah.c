@@ -117,7 +117,7 @@ int main() {
     printf("Parsing simple_add_wasm module...\n");
     err = wah_parse_module((const uint8_t *)simple_add_wasm, sizeof(simple_add_wasm), &module);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing valid module: %d\n", err);
+        fprintf(stderr, "Error parsing valid module: %s\n", wah_strerror(err));
         return 1;
     }
     printf("Module parsed successfully.\n");
@@ -125,7 +125,7 @@ int main() {
     // Create execution context
     err = wah_exec_context_create(&ctx, &module);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context: %d\n", err);
+        fprintf(stderr, "Error creating execution context: %s\n", wah_strerror(err));
         wah_free_module(&module);
         return 1;
     }
@@ -142,7 +142,7 @@ int main() {
     printf("Interpreting function %u with params %d and %d...\n", func_idx, params[0].i32, params[1].i32);
     err = wah_call(&ctx, &module, func_idx, params, 2, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function: %d\n", err);
+        fprintf(stderr, "Error interpreting function: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
@@ -155,7 +155,7 @@ int main() {
     printf("Interpreting function %u with params %d and %d...\n", func_idx, params[0].i32, params[1].i32);
     err = wah_call(&ctx, &module, func_idx, params, 2, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function: %d\n", err);
+        fprintf(stderr, "Error interpreting function: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
@@ -173,7 +173,7 @@ int main() {
     if (err == WAH_ERROR_VALIDATION_FAILED) {
         printf("Successfully detected invalid module during parsing (expected WAH_ERROR_VALIDATION_FAILED).\n");
     } else if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing invalid module: %d (Expected parsing to succeed)\n", err);
+        fprintf(stderr, "Error parsing invalid module: %s (Expected parsing to succeed)\n", wah_strerror(err));
         return 1;
     } else {
         fprintf(stderr, "Invalid module parsed successfully (Expected WAH_ERROR_VALIDATION_FAILED)\n");
@@ -187,7 +187,7 @@ int main() {
     if (err == WAH_ERROR_VALIDATION_FAILED) {
         printf("Successfully detected stack underflow during parsing (expected WAH_ERROR_VALIDATION_FAILED).\n");
     } else if (err != WAH_OK) {
-        printf("Successfully detected stack underflow during parsing (error code %d).\n", err);
+        printf("Successfully detected stack underflow during parsing (%s).\n", wah_strerror(err));
     } else {
         fprintf(stderr, "Stack underflow module parsed successfully (Expected WAH_ERROR_VALIDATION_FAILED)\n");
         wah_free_module(&module);

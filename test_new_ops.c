@@ -35,13 +35,13 @@ int main() {
     printf("=== Testing I32.AND ===\n");
     err = wah_parse_module(and_test_wasm, sizeof(and_test_wasm), &module);
     if (err != WAH_OK) {
-        printf("Failed to parse AND module: %d\n", err);
+        printf("Failed to parse AND module: %s\n", wah_strerror(err));
         return 1;
     }
     // Create context
     err = wah_exec_context_create(&ctx, &module);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context for AND test: %d\n", err);
+        fprintf(stderr, "Error creating execution context for AND test: %s\n", wah_strerror(err));
         wah_free_module(&module);
         return 1;
     }
@@ -49,7 +49,7 @@ int main() {
     params[0].i32 = 0xFF; params[1].i32 = 0x0F;
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err != WAH_OK) {
-        printf("Failed to execute AND: %d\n", err);
+        printf("Failed to execute AND: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
@@ -61,13 +61,13 @@ int main() {
     printf("\n=== Testing I32.EQ ===\n");
     err = wah_parse_module(eq_test_wasm, sizeof(eq_test_wasm), &module);
     if (err != WAH_OK) {
-        printf("Failed to parse EQ module: %d\n", err);
+        printf("Failed to parse EQ module: %s\n", wah_strerror(err));
         return 1;
     }
     // Create context
     err = wah_exec_context_create(&ctx, &module);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context for EQ test: %d\n", err);
+        fprintf(stderr, "Error creating execution context for EQ test: %s\n", wah_strerror(err));
         wah_free_module(&module);
         return 1;
     }
@@ -75,7 +75,7 @@ int main() {
     params[0].i32 = 42; params[1].i32 = 42;
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err != WAH_OK) {
-        printf("Failed to execute EQ: %d\n", err);
+        printf("Failed to execute EQ: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;

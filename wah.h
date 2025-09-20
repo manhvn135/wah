@@ -23,6 +23,9 @@ typedef enum {
     // Add more specific error codes as needed
 } wah_error_t;
 
+// Convert error code to human-readable string
+const char *wah_strerror(wah_error_t err);
+
 // --- Memory Structure ---
 #define WAH_WASM_PAGE_SIZE 65536 // 64 KB
 
@@ -270,12 +273,6 @@ typedef enum {
     WAH_OP_F64_ADD = 0xA0, WAH_OP_F64_SUB = 0xA1, WAH_OP_F64_MUL = 0xA2, WAH_OP_F64_DIV = 0xA3,
 } wah_opcode_t;
 
-// --- WebAssembly Miscellaneous Opcodes (multi-byte) ---
-typedef enum {
-    WAH_MISC_OP_MEMORY_FILL = 0x0B,
-    // Add other miscellaneous opcodes as needed
-} wah_misc_opcode_t;
-
 // --- WebAssembly Value Representation ---
 typedef union {
     int32_t i32;
@@ -492,7 +489,22 @@ void wah_free_module(wah_module_t *module);
     if (!(cond)) { err = (error); goto label; } \
 } while(0)
 
-
+const char *wah_strerror(wah_error_t err) {
+    switch (err) {
+        case WAH_OK: return "Success";
+        case WAH_ERROR_INVALID_MAGIC_NUMBER: return "Invalid WASM magic number";
+        case WAH_ERROR_INVALID_VERSION: return "Invalid WASM version";
+        case WAH_ERROR_UNEXPECTED_EOF: return "Unexpected end of file";
+        case WAH_ERROR_UNKNOWN_SECTION: return "Unknown section or opcode";
+        case WAH_ERROR_INVALID_LEB128: return "Invalid LEB128 encoding";
+        case WAH_ERROR_OUT_OF_MEMORY: return "Out of memory";
+        case WAH_ERROR_VALIDATION_FAILED: return "Validation failed";
+        case WAH_ERROR_TRAP: return "Runtime trap";
+        case WAH_ERROR_CALL_STACK_OVERFLOW: return "Call stack overflow";
+        case WAH_ERROR_MEMORY_OUT_OF_BOUNDS: return "Memory access out of bounds";
+        default: return "Unknown error";
+    }
+}
 
 static inline wah_error_t wah_type_stack_push(wah_type_stack_t *stack, wah_val_type_t type) {
     WAH_BOUNDS_CHECK(stack->sp < WAH_MAX_TYPE_STACK_SIZE, WAH_ERROR_VALIDATION_FAILED);
@@ -888,11 +900,11 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             uint16_t current_opcode_val;
             uint8_t first_byte = *code_ptr_validation++;
 
-            if (first_byte == 0xFC) {
+            if (first_byte > 0xF0) {
                 uint32_t sub_opcode_val;
                 WAH_CHECK(wah_decode_uleb128(&code_ptr_validation, code_body_end_validation, &sub_opcode_val));
                 if (sub_opcode_val > 0xFFF) return WAH_ERROR_INVALID_LEB128; // Sub-opcode out of expected range
-                current_opcode_val = (uint16_t)(0xC000 | sub_opcode_val);
+                current_opcode_val = (uint16_t)(((first_byte & 0x0F) << 12) | sub_opcode_val);
             } else {
                 current_opcode_val = (uint16_t)first_byte;
             }
@@ -1047,6 +1059,13 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
     
     while (ptr < end) {
         wah_opcode_t opcode = (wah_opcode_t)*ptr++;
+        if (opcode > 0xF0) { // Multi-byte opcode prefix is remapped
+            uint32_t sub_opcode_val;
+            WAH_CHECK(wah_decode_uleb128(&ptr, end, &sub_opcode_val));
+            if (sub_opcode_val > 0xFFF) return WAH_ERROR_INVALID_LEB128;
+            opcode = ((opcode & 0x0F) << 12) | sub_opcode_val;
+        }
+
         instruction_count++;
         
         switch (opcode) {
@@ -1105,21 +1124,9 @@ static wah_error_t wah_preparse_code(const uint8_t *code, uint32_t code_size, wa
                 WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // memory index (always 0x00)
                 break;
             }
-            case 0xFC: { // Multi-byte opcode prefix
-                uint32_t sub_opcode_val;
-                WAH_CHECK(wah_decode_uleb128(&ptr, end, &sub_opcode_val));
-                if (sub_opcode_val > 0xFFF) return WAH_ERROR_INVALID_LEB128; // Sub-opcode out of expected range
-                wah_misc_opcode_t misc_opcode = (wah_misc_opcode_t)sub_opcode_val;
-
-                switch (misc_opcode) {
-                    case WAH_MISC_OP_MEMORY_FILL: {
-                        uint32_t mem_idx;
-                        WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // memory index (always 0x00)
-                        break;
-                    }
-                    default:
-                        return WAH_ERROR_UNKNOWN_SECTION; // Unknown miscellaneous opcode
-                }
+            case WAH_OP_MEMORY_FILL: {
+                uint32_t mem_idx;
+                WAH_CHECK(wah_decode_uleb128(&ptr, end, &mem_idx)); // memory index (always 0x00)
                 break;
             }
             case WAH_OP_END:

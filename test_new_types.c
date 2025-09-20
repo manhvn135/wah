@@ -248,7 +248,7 @@ int run_test(const char* test_name, const uint8_t* wasm_binary, size_t binary_si
     wah_exec_context_t ctx; // Declare context
     wah_error_t err = wah_parse_module(wasm_binary, binary_size, &module);
     if (err != WAH_OK) {
-        fprintf(stderr, "FAIL: Parsing %s (error: %d)\n", test_name, err);
+        fprintf(stderr, "FAIL: Parsing %s (error: %s)\n", test_name, wah_strerror(err));
         return 1;
     }
     printf("PASS: Parsing %s\n", test_name);
