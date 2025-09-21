@@ -14,7 +14,7 @@ typedef enum {
     WAH_ERROR_INVALID_VERSION,
     WAH_ERROR_UNEXPECTED_EOF,
     WAH_ERROR_UNKNOWN_SECTION,
-    WAH_ERROR_INVALID_LEB128,
+    WAH_ERROR_TOO_LARGE, // exceeding implementation limits (including numeric overflow)
     WAH_ERROR_OUT_OF_MEMORY,
     WAH_ERROR_VALIDATION_FAILED,
     WAH_ERROR_TRAP,  // Runtime trap (division by zero, integer overflow, etc.)
@@ -46,7 +46,7 @@ static inline wah_error_t wah_decode_uleb128(const uint8_t **ptr, const uint8_t 
             return WAH_ERROR_UNEXPECTED_EOF;
         }
         if (shift >= 32) {
-            return WAH_ERROR_INVALID_LEB128;
+            return WAH_ERROR_TOO_LARGE;
         }
         byte = *(*ptr)++;
         *result |= (byte & 0x7F) << shift;
@@ -64,7 +64,7 @@ static inline wah_error_t wah_decode_sleb128_32(const uint8_t **ptr, const uint8
 
     do {
         if (*ptr >= end) return WAH_ERROR_UNEXPECTED_EOF;
-        if (shift >= 32) return WAH_ERROR_INVALID_LEB128;
+        if (shift >= 32) return WAH_ERROR_TOO_LARGE;
         byte = *(*ptr)++;
         val |= (uint32_t)(byte & 0x7F) << shift;
         shift += 7;
@@ -91,7 +91,7 @@ static inline wah_error_t wah_decode_uleb128_64(const uint8_t **ptr, const uint8
             return WAH_ERROR_UNEXPECTED_EOF;
         }
         if (shift >= 64) {
-            return WAH_ERROR_INVALID_LEB128;
+            return WAH_ERROR_TOO_LARGE;
         }
         byte = *(*ptr)++;
         *result |= (uint64_t)(byte & 0x7F) << shift;
@@ -109,7 +109,7 @@ static inline wah_error_t wah_decode_sleb128_64(const uint8_t **ptr, const uint8
 
     do {
         if (*ptr >= end) return WAH_ERROR_UNEXPECTED_EOF;
-        if (shift >= 64) return WAH_ERROR_INVALID_LEB128;
+        if (shift >= 64) return WAH_ERROR_TOO_LARGE;
         byte = *(*ptr)++;
         val |= (uint64_t)(byte & 0x7F) << shift;
         shift += 7;
@@ -768,7 +768,7 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_INVALID_VERSION: return "Invalid WASM version";
         case WAH_ERROR_UNEXPECTED_EOF: return "Unexpected end of file";
         case WAH_ERROR_UNKNOWN_SECTION: return "Unknown section or opcode";
-        case WAH_ERROR_INVALID_LEB128: return "Invalid LEB128 encoding";
+        case WAH_ERROR_TOO_LARGE: return "exceeding implementation limits (or value too large)";
         case WAH_ERROR_OUT_OF_MEMORY: return "Out of memory";
         case WAH_ERROR_VALIDATION_FAILED: return "Validation failed";
         case WAH_ERROR_TRAP: return "Runtime trap";
@@ -1877,7 +1877,7 @@ static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, ui
     if (first_byte > 0xF0) { // Multi-byte opcode prefix is remapped: F1 23 -> 1023, FC DEF -> CDEF
         uint32_t sub_opcode_val;
         WAH_CHECK(wah_decode_uleb128(ptr, end, &sub_opcode_val));
-        if (sub_opcode_val > 0xFFF) return WAH_ERROR_INVALID_LEB128; // Sub-opcode out of expected range
+        if (sub_opcode_val > 0xFFF) return WAH_ERROR_VALIDATION_FAILED; // Sub-opcode out of expected range
         *opcode_val = (uint16_t)(((first_byte & 0x0F) << 12) | sub_opcode_val);
     } else {
         *opcode_val = (uint16_t)first_byte;
@@ -2170,7 +2170,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 uint32_t num_locals = called_code->local_count;
                 if (num_locals > 0) {
                     if (ctx->sp + num_locals > ctx->value_stack_capacity) {
-                        err = WAH_ERROR_OUT_OF_MEMORY;
+                        err = WAH_ERROR_TOO_LARGE;
                         goto cleanup;
                     }
                     memset(&ctx->value_stack[ctx->sp], 0, sizeof(wah_value_t) * num_locals);
@@ -2508,7 +2508,7 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, u
     // Push initial params onto the value stack
     for (uint32_t i = 0; i < param_count; ++i) {
         if (exec_ctx->sp >= exec_ctx->value_stack_capacity) {
-            return WAH_ERROR_OUT_OF_MEMORY; // Value stack overflow
+            return WAH_ERROR_TOO_LARGE; // Value stack overflow
         }
         exec_ctx->value_stack[exec_ctx->sp++] = params[i];
     }
