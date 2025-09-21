@@ -597,6 +597,103 @@ static void test_br_if_validation() {
     wah_free_module(&module);
 }
 
+// Test br_table, which acts like a switch statement
+static const uint8_t br_table_wasm[] = {
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic, version
+    // Type section
+    0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+    // Function section
+    0x03, 0x02, 0x01, 0x00,
+    // Export section
+    0x07, 0x11, 0x01, 0x0f, 0x62, 0x72, 0x5f, 0x74, 0x61, 0x62, 0x6c,
+    0x65, 0x5f, 0x66, 0x75, 0x6e, 0x63, 0x00, 0x00,
+    // Code section
+    0x0a, 0x23, 0x01,
+    0x21, // func body size
+    0x00, // locals
+    // main logic
+    0x02, 0x7f, // block $l3 (result i32)
+      0x02, 0x40, // block $l2
+        0x02, 0x40, // block $l1
+          0x02, 0x40, // block $l0
+            0x20, 0x00, // local.get 0
+            0x0e, // br_table
+            0x03, // 3 targets in vec
+            0x00, // target 0 -> $l0
+            0x01, // target 1 -> $l1
+            0x02, // target 2 -> $l2
+            0x03, // default target -> $l3
+          0x0b, // end $l0
+          0x41, 0x0a, // i32.const 10
+          0x0f, // return
+        0x0b, // end $l1
+        0x41, 0x14, // i32.const 20
+        0x0f, // return
+      0x0b, // end $l2
+      0x41, 0x1e, // i32.const 30
+      0x0f, // return
+    0x0b, // end $l3
+    0x41, 0x28, // i32.const 40
+    0x0b // end func
+};
+
+static void test_br_table() {
+    printf("Testing br_table...\n");
+    wah_module_t module;
+    wah_error_t err = wah_parse_module(br_table_wasm, sizeof(br_table_wasm), &module);
+    if (err != WAH_OK) {
+        printf("  ERROR: Failed to parse br_table module: %s\n", wah_strerror(err));
+        assert(false);
+    }
+    assert(err == WAH_OK);
+    printf("  - br_table module parsed successfully\n");
+
+    wah_exec_context_t ctx;
+    err = wah_exec_context_create(&ctx, &module);
+    assert(err == WAH_OK);
+
+    wah_value_t params[1];
+    wah_value_t result;
+
+    // Test case 0
+    params[0].i32 = 0;
+    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    assert(err == WAH_OK);
+    assert(result.i32 == 10);
+    printf("  - Case 0 -> 10 PASSED\n");
+
+    // Test case 1
+    params[0].i32 = 1;
+    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    assert(err == WAH_OK);
+    assert(result.i32 == 20);
+    printf("  - Case 1 -> 20 PASSED\n");
+
+    // Test case 2
+    params[0].i32 = 2;
+    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    assert(err == WAH_OK);
+    assert(result.i32 == 30);
+    printf("  - Case 2 -> 30 PASSED\n");
+
+    // Test case 3 (default)
+    params[0].i32 = 3;
+    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    assert(err == WAH_OK);
+    assert(result.i32 == 40);
+    printf("  - Case 3 (default) -> 40 PASSED\n");
+    
+    // Test case 4 (default, out of bounds)
+    params[0].i32 = 4;
+    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    assert(err == WAH_OK);
+    assert(result.i32 == 40);
+    printf("  - Case 4 (default) -> 40 PASSED\n");
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 
 int main() {
     printf("=== Control Flow Tests ===\n");
@@ -606,6 +703,7 @@ int main() {
     test_loop();
     test_validation_unreachable_br_return();
     test_br_if_validation();
+    test_br_table();
     printf("=== Control Flow Tests Complete ===\n");
     return 0;
 }
