@@ -1,8 +1,9 @@
 *.exe
-test_new_types
-test_new_ops
-test_traps
-test_wah
-test_control_flow
-test_determinism
+wah_test_basic
+wah_test_new_types
+wah_test_new_ops
+wah_test_traps
+wah_test_memory
+wah_test_control_flow
+wah_test_determinism
 .claude

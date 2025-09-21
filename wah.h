@@ -3,9 +3,18 @@
 #ifndef WAH_H
 #define WAH_H
 
+//#define WAH_DEBUG
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+
+#ifdef WAH_DEBUG
+#include <stdio.h>
+#define WAH_LOG(fmt, ...) printf("(%d) " fmt "\n", __LINE__, ##__VA_ARGS__)
+#else
+#define WAH_LOG(fmt, ...) (void)(0)
+#endif
 
 // --- Error Codes ---
 typedef enum {
@@ -498,7 +507,6 @@ void wah_free_module(wah_module_t *module);
 #include <assert.h> // For assert
 #include <stdint.h> // For INT32_MIN, INT32_MAX
 #include <math.h> // For floating-point functions
-#include <stdio.h>
 #if defined(_MSC_VER)
 #include <intrin.h> // For MSVC intrinsics
 #endif
@@ -745,20 +753,20 @@ static inline double wah_nearest_f64(double d) {
 // --- Helper Macros ---
 #define WAH_CHECK(expr) do { \
     wah_error_t _err = (expr); \
-    if (_err != WAH_OK) { return _err; } \
+    if (_err != WAH_OK) { WAH_LOG("WAH_CHECK(%s) failed due to %s", #expr, wah_strerror(_err)); return _err; } \
 } while(0)
 
 #define WAH_CHECK_GOTO(expr, label) do { \
     err = (expr); \
-    if (err != WAH_OK) { goto label; } \
+    if (err != WAH_OK) { WAH_LOG("WAH_CHECK_GOTO(%s, %s) failed due to %s", #expr, #label, wah_strerror(err)); goto label; } \
 } while(0)
 
 #define WAH_BOUNDS_CHECK(cond, error) do { \
-    if (!(cond)) { return (error); } \
+    if (!(cond)) { WAH_LOG("WAH_BOUNDS_CHECK(%s, %s) failed", #cond, #error); return (error); } \
 } while(0)
 
 #define WAH_BOUNDS_CHECK_GOTO(cond, error, label) do { \
-    if (!(cond)) { err = (error); goto label; } \
+    if (!(cond)) { err = (error); WAH_LOG("WAH_BOUNDS_CHECK_GOTO(%s, %s, %s) failed", #cond, #error, #label); goto label; } \
 } while(0)
 
 const char *wah_strerror(wah_error_t err) {
