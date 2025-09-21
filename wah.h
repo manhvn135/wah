@@ -3,8 +3,6 @@
 #ifndef WAH_H
 #define WAH_H
 
-//#define WAH_DEBUG
-
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -198,39 +196,25 @@ static inline void wah_write_u64_le(uint8_t *ptr, uint64_t val) {
 
 // Helper to read a float from a byte array in little-endian format
 static inline float wah_read_f32_le(const uint8_t *ptr) {
-    union {
-        uint32_t i;
-        float f;
-    } u;
-    u.i = wah_read_u32_le(ptr);
+    union { uint32_t i; float f; } u = { .i = wah_read_u32_le(ptr) };
     return u.f;
 }
 
 // Helper to read a double from a byte array in little-endian format
 static inline double wah_read_f64_le(const uint8_t *ptr) {
-    union {
-        uint64_t i;
-        double d;
-    } u;
-    u.i = wah_read_u64_le(ptr);
+    union { uint64_t i; double d; } u = { .i = wah_read_u64_le(ptr) };
     return u.d;
 }
 
 // Helper to write a float to a byte array in little-endian format
 static inline void wah_write_f32_le(uint8_t *ptr, float val) {
-    union {
-        uint32_t i;
-        float f;
-    } u = {.f = val};
+    union { uint32_t i; float f; } u = { .f = val };
     wah_write_u32_le(ptr, u.i);
 }
 
 // Helper to write a double to a byte array in little-endian format
 static inline void wah_write_f64_le(uint8_t *ptr, double val) {
-    union {
-        uint64_t i;
-        double f;
-    } u = {.f = val};
+    union { uint64_t i; double f; } u = { .f = val };
     wah_write_u64_le(ptr, u.i);
 }
 
@@ -311,6 +295,22 @@ typedef enum {
     WAH_OP_F64_TRUNC = 0x9D, WAH_OP_F64_NEAREST = 0x9E, WAH_OP_F64_SQRT = 0x9F,
     WAH_OP_F64_ADD = 0xA0, WAH_OP_F64_SUB = 0xA1, WAH_OP_F64_MUL = 0xA2, WAH_OP_F64_DIV = 0xA3,
     WAH_OP_F64_MIN = 0xA4, WAH_OP_F64_MAX = 0xA5, WAH_OP_F64_COPYSIGN = 0xA6,
+
+    // Conversion Operators
+    WAH_OP_I32_WRAP_I64 = 0xA7,
+    WAH_OP_I32_TRUNC_F32_S = 0xA8, WAH_OP_I32_TRUNC_F32_U = 0xA9,
+    WAH_OP_I32_TRUNC_F64_S = 0xAA, WAH_OP_I32_TRUNC_F64_U = 0xAB,
+    WAH_OP_I64_EXTEND_I32_S = 0xAC, WAH_OP_I64_EXTEND_I32_U = 0xAD,
+    WAH_OP_I64_TRUNC_F32_S = 0xAE, WAH_OP_I64_TRUNC_F32_U = 0xAF,
+    WAH_OP_I64_TRUNC_F64_S = 0xB0, WAH_OP_I64_TRUNC_F64_U = 0xB1,
+    WAH_OP_F32_CONVERT_I32_S = 0xB2, WAH_OP_F32_CONVERT_I32_U = 0xB3,
+    WAH_OP_F32_CONVERT_I64_S = 0xB4, WAH_OP_F32_CONVERT_I64_U = 0xB5,
+    WAH_OP_F32_DEMOTE_F64 = 0xB6,
+    WAH_OP_F64_CONVERT_I32_S = 0xB7, WAH_OP_F64_CONVERT_I32_U = 0xB8,
+    WAH_OP_F64_CONVERT_I64_S = 0xB9, WAH_OP_F64_CONVERT_I64_U = 0xBA,
+    WAH_OP_F64_PROMOTE_F32 = 0xBB,
+    WAH_OP_I32_REINTERPRET_F32 = 0xBC, WAH_OP_I64_REINTERPRET_F64 = 0xBD,
+    WAH_OP_F32_REINTERPRET_I32 = 0xBE, WAH_OP_F64_REINTERPRET_I64 = 0xBF,
 } wah_opcode_t;
 
 typedef union {
@@ -342,13 +342,13 @@ typedef struct {
     uint32_t capacity; // Allocated capacity
 } wah_stack_t;
 
+// --- Type Stack for Validation ---
+
 #define WAH_MAX_TYPE_STACK_SIZE 1024 // Maximum size of the type stack for validation
 typedef struct {
     wah_val_type_t data[WAH_MAX_TYPE_STACK_SIZE];
     uint32_t sp; // Stack pointer
 } wah_type_stack_t;
-
-// --- Type Stack for Validation ---
 
 // --- Execution Context (New Design) ---
 
@@ -406,7 +406,7 @@ typedef enum {
     WAH_SECTION_ELEMENT = 9,
     WAH_SECTION_CODE = 10,
     WAH_SECTION_DATA = 11,
-    WAH_SECTION_DATACOUNT = 12, // Proposed, not in all versions
+    WAH_SECTION_DATACOUNT = 12,
 } wah_section_id_t;
 
 // --- Function Type ---
@@ -776,6 +776,63 @@ static inline double wah_nearest_f64(double d) {
     }
     return rounded;
 #endif
+}
+
+// Helper functions for floating-point to integer truncations with trap handling
+static inline wah_error_t wah_trunc_f32_to_i32(float val, int32_t *result) {
+    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
+    if (val < (float)INT32_MIN || val >= (float)INT32_MAX + 1.0f) return WAH_ERROR_TRAP;
+    *result = (int32_t)truncf(val);
+    return WAH_OK;
+}
+
+static inline wah_error_t wah_trunc_f32_to_u32(float val, uint32_t *result) {
+    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
+    if (val < 0.0f || val >= (float)UINT32_MAX + 1.0f) return WAH_ERROR_TRAP;
+    *result = (uint32_t)truncf(val);
+    return WAH_OK;
+}
+
+static inline wah_error_t wah_trunc_f64_to_i32(double val, int32_t *result) {
+    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
+    if (val < (double)INT32_MIN || val >= (double)INT32_MAX + 1.0) return WAH_ERROR_TRAP;
+    *result = (int32_t)trunc(val);
+    return WAH_OK;
+}
+
+static inline wah_error_t wah_trunc_f64_to_u32(double val, uint32_t *result) {
+    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
+    if (val < 0.0 || val >= (double)UINT32_MAX + 1.0) return WAH_ERROR_TRAP;
+    *result = (uint32_t)trunc(val);
+    return WAH_OK;
+}
+
+static inline wah_error_t wah_trunc_f32_to_i64(float val, int64_t *result) {
+    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
+    if (val < (float)INT64_MIN || val >= (float)INT64_MAX + 1.0f) return WAH_ERROR_TRAP;
+    *result = (int64_t)truncf(val);
+    return WAH_OK;
+}
+
+static inline wah_error_t wah_trunc_f32_to_u64(float val, uint64_t *result) {
+    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
+    if (val < 0.0f || val >= (float)UINT64_MAX + 1.0f) return WAH_ERROR_TRAP;
+    *result = (uint64_t)truncf(val);
+    return WAH_OK;
+}
+
+static inline wah_error_t wah_trunc_f64_to_i64(double val, int64_t *result) {
+    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
+    if (val < (double)INT64_MIN || val >= (double)INT64_MAX + 1.0) return WAH_ERROR_TRAP;
+    *result = (int64_t)trunc(val);
+    return WAH_OK;
+}
+
+static inline wah_error_t wah_trunc_f64_to_u64(double val, uint64_t *result) {
+    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
+    if (val < 0.0 || val >= (double)UINT64_MAX + 1.0) return WAH_ERROR_TRAP;
+    *result = (uint64_t)trunc(val);
+    return WAH_OK;
 }
 
 // --- Helper Macros ---
@@ -1231,8 +1288,34 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_F32_MIN: case WAH_OP_F32_MAX: case WAH_OP_F32_COPYSIGN: BINARY_OP(F32)
         case WAH_OP_F64_MIN: case WAH_OP_F64_MAX: case WAH_OP_F64_COPYSIGN: BINARY_OP(F64)
 
+#define POP_PUSH(INPUT_TYPE, OUTPUT_TYPE) { \
+    wah_val_type_t type; \
+    WAH_CHECK(wah_validation_pop_type(vctx, &type)); \
+    WAH_CHECK(wah_validate_type_match(type, WAH_VAL_TYPE_##INPUT_TYPE)); \
+    return wah_validation_push_type(vctx, WAH_VAL_TYPE_##OUTPUT_TYPE); \
+}
+
+        // Conversion Operators
+        case WAH_OP_I32_WRAP_I64: POP_PUSH(I64, I32)
+        case WAH_OP_I32_TRUNC_F32_S: case WAH_OP_I32_TRUNC_F32_U: POP_PUSH(F32, I32)
+        case WAH_OP_I32_TRUNC_F64_S: case WAH_OP_I32_TRUNC_F64_U: POP_PUSH(F64, I32)
+        case WAH_OP_I64_EXTEND_I32_S: case WAH_OP_I64_EXTEND_I32_U: POP_PUSH(I32, I64)
+        case WAH_OP_I64_TRUNC_F32_S: case WAH_OP_I64_TRUNC_F32_U: POP_PUSH(F32, I64)
+        case WAH_OP_I64_TRUNC_F64_S: case WAH_OP_I64_TRUNC_F64_U: POP_PUSH(F64, I64)
+        case WAH_OP_F32_CONVERT_I32_S: case WAH_OP_F32_CONVERT_I32_U: POP_PUSH(I32, F32)
+        case WAH_OP_F32_CONVERT_I64_S: case WAH_OP_F32_CONVERT_I64_U: POP_PUSH(I64, F32)
+        case WAH_OP_F32_DEMOTE_F64: POP_PUSH(F64, F32)
+        case WAH_OP_F64_CONVERT_I32_S: case WAH_OP_F64_CONVERT_I32_U: POP_PUSH(I32, F64)
+        case WAH_OP_F64_CONVERT_I64_S: case WAH_OP_F64_CONVERT_I64_U: POP_PUSH(I64, F64)
+        case WAH_OP_F64_PROMOTE_F32: POP_PUSH(F32, F64)
+        case WAH_OP_I32_REINTERPRET_F32: POP_PUSH(F32, I32)
+        case WAH_OP_I64_REINTERPRET_F64: POP_PUSH(F64, I64)
+        case WAH_OP_F32_REINTERPRET_I32: POP_PUSH(I32, F32)
+        case WAH_OP_F64_REINTERPRET_I64: POP_PUSH(I64, F64)
+
 #undef UNARY_OP
 #undef BINARY_OP
+#undef POP_PUSH
 
         // Parametric operations
         case WAH_OP_DROP: {
@@ -2583,15 +2666,23 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 break;
             }
 
+            #define VSTACK_TOP (ctx->value_stack[ctx->sp - 1])
             #define VSTACK_B (ctx->value_stack[ctx->sp - 1])
             #define VSTACK_A (ctx->value_stack[ctx->sp - 2])
-            #define BINOP_I(N,op) { VSTACK_A.i##N = (int64_t)((uint64_t)VSTACK_A.i##N op (uint64_t)VSTACK_B.i##N); ctx->sp--; break; }
+            #define BINOP_I(N,op) { VSTACK_A.i##N = (int##N##_t)((uint##N##_t)VSTACK_A.i##N op (uint##N##_t)VSTACK_B.i##N); ctx->sp--; break; }
             #define CMP_I_S(N,op) { VSTACK_A.i32 = VSTACK_A.i##N op VSTACK_B.i##N ? 1 : 0; ctx->sp--; break; }
-            #define CMP_I_U(N,op) { VSTACK_A.i32 = (uint64_t)VSTACK_A.i##N op (uint64_t)VSTACK_B.i##N ? 1 : 0; ctx->sp--; break; }
+            #define CMP_I_U(N,op) { VSTACK_A.i32 = (uint##N##_t)VSTACK_A.i##N op (uint##N##_t)VSTACK_B.i##N ? 1 : 0; ctx->sp--; break; }
             #define BINOP_F(N,op) { VSTACK_A.f##N = VSTACK_A.f##N op VSTACK_B.f##N; ctx->sp--; break; }
             #define CMP_F(N,op)   { VSTACK_A.i32 = VSTACK_A.f##N op VSTACK_B.f##N ? 1 : 0; ctx->sp--; break; }
+            #define UNOP_I_FN(N,fn)  { VSTACK_TOP.i##N = (int##N##_t)fn((uint##N##_t)VSTACK_TOP.i##N); break; }
+            #define BINOP_I_FN(N,fn) { VSTACK_A.i##N = (int##N##_t)fn((uint##N##_t)VSTACK_A.i##N, (uint##N##_t)VSTACK_B.i##N); ctx->sp--; break; }
+            #define UNOP_F_FN(N,fn)  { VSTACK_TOP.f##N = fn(VSTACK_TOP.f##N); break; }
+            #define BINOP_F_FN(N,fn) { VSTACK_A.f##N = fn(VSTACK_A.f##N, VSTACK_B.f##N); ctx->sp--; break; }
 
-#define NUM_OPS(N) \
+#define NUM_OPS(N,F) \
+            case WAH_OP_I##N##_CLZ: UNOP_I_FN(N, wah_clz_u##N) \
+            case WAH_OP_I##N##_CTZ: UNOP_I_FN(N, wah_ctz_u##N) \
+            case WAH_OP_I##N##_POPCNT: UNOP_I_FN(N, wah_popcount_u##N) \
             case WAH_OP_I##N##_ADD: BINOP_I(N,+) \
             case WAH_OP_I##N##_SUB: BINOP_I(N,-) \
             case WAH_OP_I##N##_MUL: BINOP_I(N,*) \
@@ -2619,6 +2710,8 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             case WAH_OP_I##N##_SHL: { VSTACK_A.i##N = (int##N##_t)((uint##N##_t)VSTACK_A.i##N << (VSTACK_B.i##N & (N-1))); ctx->sp--; break; } \
             case WAH_OP_I##N##_SHR_S: { VSTACK_A.i##N >>= (VSTACK_B.i##N & (N-1)); ctx->sp--; break; } \
             case WAH_OP_I##N##_SHR_U: { VSTACK_A.i##N = (int##N##_t)((uint##N##_t)VSTACK_A.i##N >> (VSTACK_B.i##N & (N-1))); ctx->sp--; break; } \
+            case WAH_OP_I##N##_ROTL: BINOP_I_FN(N, wah_rotl_u##N) \
+            case WAH_OP_I##N##_ROTR: BINOP_I_FN(N, wah_rotr_u##N) \
             \
             case WAH_OP_I##N##_EQ:   CMP_I_S(N,==) \
             case WAH_OP_I##N##_NE:   CMP_I_S(N,!=) \
@@ -2632,6 +2725,13 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             case WAH_OP_I##N##_GE_U: CMP_I_U(N,>=) \
             case WAH_OP_I##N##_EQZ:  { VSTACK_A.i32 = (VSTACK_A.i##N == 0) ? 1 : 0; break; } \
             \
+            case WAH_OP_F##N##_ABS: UNOP_F_FN(N, fabs##F) \
+            case WAH_OP_F##N##_NEG: UNOP_F_FN(N, -) \
+            case WAH_OP_F##N##_CEIL: UNOP_F_FN(N, ceil##F) \
+            case WAH_OP_F##N##_FLOOR: UNOP_F_FN(N, floor##F) \
+            case WAH_OP_F##N##_TRUNC: UNOP_F_FN(N, trunc##F) \
+            case WAH_OP_F##N##_NEAREST: UNOP_F_FN(N, wah_nearest_f##N) \
+            case WAH_OP_F##N##_SQRT: UNOP_F_FN(N, sqrt##F) \
             case WAH_OP_F##N##_ADD: BINOP_F(N,+) \
             case WAH_OP_F##N##_SUB: BINOP_F(N,-) \
             case WAH_OP_F##N##_MUL: BINOP_F(N,*) \
@@ -2641,7 +2741,10 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             case WAH_OP_F##N##_LT: CMP_F(N,<) \
             case WAH_OP_F##N##_GT: CMP_F(N,>) \
             case WAH_OP_F##N##_LE: CMP_F(N,<=) \
-            case WAH_OP_F##N##_GE: CMP_F(N,>=)
+            case WAH_OP_F##N##_GE: CMP_F(N,>=) \
+            case WAH_OP_F##N##_MIN: BINOP_F_FN(N, fmin##F) \
+            case WAH_OP_F##N##_MAX: BINOP_F_FN(N, fmax##F) \
+            case WAH_OP_F##N##_COPYSIGN: BINOP_F_FN(N, copysign##F)
 
 #define LOAD_OP(N, T, value_field, cast) { \
                 uint32_t offset = wah_read_u32_le(bytecode_ip); \
@@ -2672,8 +2775,14 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 break; \
             }
 
-            NUM_OPS(32)
-            NUM_OPS(64)
+#define CONVERT(from_field, cast, to_field) { VSTACK_TOP.to_field = cast (VSTACK_TOP.from_field); break; }
+#define CONVERT_CHECK(from_field, call, ty, cast, to_field) \
+            { ty res; WAH_CHECK(call(VSTACK_TOP.from_field, &res)); VSTACK_TOP.to_field = cast (res); break; }
+#define REINTERPRET(from_field, from_ty, to_field, to_ty) \
+            { union { from_ty from; to_ty to; } u = { .from = VSTACK_TOP.from_field }; VSTACK_TOP.to_field = u.to; break; }
+
+            NUM_OPS(32,f)
+            NUM_OPS(64,)
 
             case WAH_OP_I32_LOAD: LOAD_OP(32, u32, i32, (int32_t))
             case WAH_OP_I64_LOAD: LOAD_OP(64, u64, i64, (int64_t))
@@ -2700,76 +2809,54 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             case WAH_OP_I64_STORE16: STORE_OP(16, u16, i64, int64_t, (uint16_t))
             case WAH_OP_I64_STORE32: STORE_OP(32, u32, i64, int64_t, (uint32_t))
 
+            case WAH_OP_I32_WRAP_I64: CONVERT(i64, (int32_t), i32)
+            case WAH_OP_I32_TRUNC_F32_S: CONVERT_CHECK(f32, wah_trunc_f32_to_i32, int32_t, , i32)
+            case WAH_OP_I32_TRUNC_F32_U: CONVERT_CHECK(f32, wah_trunc_f32_to_u32, uint32_t, (int32_t), i32)
+            case WAH_OP_I32_TRUNC_F64_S: CONVERT_CHECK(f64, wah_trunc_f64_to_i32, int32_t, , i32)
+            case WAH_OP_I32_TRUNC_F64_U: CONVERT_CHECK(f64, wah_trunc_f64_to_u32, uint32_t, (int32_t), i32)
+
+            case WAH_OP_I64_EXTEND_I32_S: CONVERT(i32, (int64_t), i64)
+            case WAH_OP_I64_EXTEND_I32_U: CONVERT(i32, (int64_t)(uint32_t), i64)
+            case WAH_OP_I64_TRUNC_F32_S: CONVERT_CHECK(f32, wah_trunc_f32_to_i64, int64_t, , i64)
+            case WAH_OP_I64_TRUNC_F32_U: CONVERT_CHECK(f32, wah_trunc_f32_to_u64, uint64_t, (int64_t), i64)
+            case WAH_OP_I64_TRUNC_F64_S: CONVERT_CHECK(f64, wah_trunc_f64_to_i64, int64_t, , i64)
+            case WAH_OP_I64_TRUNC_F64_U: CONVERT_CHECK(f64, wah_trunc_f64_to_u64, uint64_t, (int64_t), i64)
+
+            case WAH_OP_F32_CONVERT_I32_S: CONVERT(i32, (float), f32)
+            case WAH_OP_F32_CONVERT_I32_U: CONVERT(i32, (float)(uint32_t), f32)
+            case WAH_OP_F32_CONVERT_I64_S: CONVERT(i64, (float), f32)
+            case WAH_OP_F32_CONVERT_I64_U: CONVERT(i64, (float)(uint64_t), f32)
+            case WAH_OP_F32_DEMOTE_F64: CONVERT(f64, (float), f32)
+
+            case WAH_OP_F64_CONVERT_I32_S: CONVERT(i32, (double), f64)
+            case WAH_OP_F64_CONVERT_I32_U: CONVERT(i32, (double)(uint32_t), f64)
+            case WAH_OP_F64_CONVERT_I64_S: CONVERT(i64, (double), f64)
+            case WAH_OP_F64_CONVERT_I64_U: CONVERT(i64, (double)(uint64_t), f64)
+            case WAH_OP_F64_PROMOTE_F32: CONVERT(f32, (double), f64)
+
+            case WAH_OP_I32_REINTERPRET_F32: REINTERPRET(f32, float, i32, int32_t)
+            case WAH_OP_I64_REINTERPRET_F64: REINTERPRET(f64, double, i64, int64_t)
+            case WAH_OP_F32_REINTERPRET_I32: REINTERPRET(i32, int32_t, f32, float)
+            case WAH_OP_F64_REINTERPRET_I64: REINTERPRET(i64, int64_t, f64, double)
+
+#undef VSTACK_TOP
+#undef VSTACK_B
+#undef VSTACK_A
+#undef BINOP_I
+#undef CMP_I_S
+#undef CMP_I_U
+#undef BINOP_F
+#undef CMP_F
+#undef UNOP_I_FN
+#undef BINOP_I_FN
+#undef UNOP_F_FN
+#undef BINOP_F_FN
 #undef NUM_OPS
 #undef LOAD_OP
 #undef STORE_OP
-
-#define UNARY_INT_OP(N, func) { \
-    ctx->value_stack[ctx->sp - 1].i##N = (int##N##_t)func((uint##N##_t)ctx->value_stack[ctx->sp - 1].i##N); \
-    break; \
-}
-
-#define BINARY_INT_OP(N, func) { \
-    VSTACK_A.i##N = (int##N##_t)func((uint##N##_t)VSTACK_A.i##N, (uint##N##_t)VSTACK_B.i##N); \
-    ctx->sp--; \
-    break; \
-}
-
-#define UNARY_FLOAT_OP(N, func) { \
-    ctx->value_stack[ctx->sp - 1].f##N = func(ctx->value_stack[ctx->sp - 1].f##N); \
-    break; \
-}
-
-#define BINARY_FLOAT_OP(N, func) { \
-    VSTACK_A.f##N = func(VSTACK_A.f##N, VSTACK_B.f##N); \
-    ctx->sp--; \
-    break; \
-}
-
-            // Integer Unary Operations
-            case WAH_OP_I32_CLZ: UNARY_INT_OP(32, wah_clz_u32)
-            case WAH_OP_I32_CTZ: UNARY_INT_OP(32, wah_ctz_u32)
-            case WAH_OP_I32_POPCNT: UNARY_INT_OP(32, wah_popcount_u32)
-            case WAH_OP_I64_CLZ: UNARY_INT_OP(64, wah_clz_u64)
-            case WAH_OP_I64_CTZ: UNARY_INT_OP(64, wah_ctz_u64)
-            case WAH_OP_I64_POPCNT: UNARY_INT_OP(64, wah_popcount_u64)
-
-            // Integer Binary Operations
-            case WAH_OP_I32_ROTL: BINARY_INT_OP(32, wah_rotl_u32)
-            case WAH_OP_I32_ROTR: BINARY_INT_OP(32, wah_rotr_u32)
-            case WAH_OP_I64_ROTL: BINARY_INT_OP(64, wah_rotl_u64)
-            case WAH_OP_I64_ROTR: BINARY_INT_OP(64, wah_rotr_u64)
-
-            // Floating-Point Unary Operations
-            case WAH_OP_F32_ABS: UNARY_FLOAT_OP(32, fabsf)
-            case WAH_OP_F32_NEG: UNARY_FLOAT_OP(32, -)
-            case WAH_OP_F32_CEIL: UNARY_FLOAT_OP(32, ceilf)
-            case WAH_OP_F32_FLOOR: UNARY_FLOAT_OP(32, floorf)
-            case WAH_OP_F32_TRUNC: UNARY_FLOAT_OP(32, truncf)
-            case WAH_OP_F32_NEAREST: UNARY_FLOAT_OP(32, wah_nearest_f32)
-            case WAH_OP_F32_SQRT: UNARY_FLOAT_OP(32, sqrtf)
-
-            case WAH_OP_F64_ABS: UNARY_FLOAT_OP(64, fabs)
-            case WAH_OP_F64_NEG: UNARY_FLOAT_OP(64, -)
-            case WAH_OP_F64_CEIL: UNARY_FLOAT_OP(64, ceil)
-            case WAH_OP_F64_FLOOR: UNARY_FLOAT_OP(64, floor)
-            case WAH_OP_F64_TRUNC: UNARY_FLOAT_OP(64, trunc)
-            case WAH_OP_F64_NEAREST: UNARY_FLOAT_OP(64, wah_nearest_f64)
-            case WAH_OP_F64_SQRT: UNARY_FLOAT_OP(64, sqrt)
-
-            // Floating-Point Binary Operations
-            case WAH_OP_F32_MIN: BINARY_FLOAT_OP(32, fminf)
-            case WAH_OP_F32_MAX: BINARY_FLOAT_OP(32, fmaxf)
-            case WAH_OP_F32_COPYSIGN: BINARY_FLOAT_OP(32, copysignf)
-
-            case WAH_OP_F64_MIN: BINARY_FLOAT_OP(64, fmin)
-            case WAH_OP_F64_MAX: BINARY_FLOAT_OP(64, fmax)
-            case WAH_OP_F64_COPYSIGN: BINARY_FLOAT_OP(64, copysign)
-
-#undef UNARY_INT_OP
-#undef BINARY_INT_OP
-#undef UNARY_FLOAT_OP
-#undef BINARY_FLOAT_OP
+#undef CONVERT
+#undef CONVERT_CHECK
+#undef REINTERPRET
 
             case WAH_OP_MEMORY_SIZE: {
                 // memory index (always 0x00) is consumed by preparse, no need to read here

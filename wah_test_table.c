@@ -126,7 +126,7 @@ const uint8_t wasm_binary_table_indirect_call[] = {
 };
 
 void wah_test_table_indirect_call() {
-    printf("## Running wah_test_table_indirect_call...\n");
+    printf("Running wah_test_table_indirect_call...\n");
 
     wah_module_t module;
     wah_error_t err = wah_parse_module(wasm_binary_table_indirect_call, sizeof(wasm_binary_table_indirect_call), &module);
@@ -169,7 +169,7 @@ void wah_test_table_indirect_call() {
     wah_exec_context_destroy(&exec_ctx);
     wah_free_module(&module);
 
-    printf("## wah_test_table_indirect_call passed.\n");
+    printf("wah_test_table_indirect_call passed.\n");
 }
 
 int main() {
