@@ -241,7 +241,7 @@ typedef enum {
     WAH_VAL_TYPE_I64 = 0x7E,
     WAH_VAL_TYPE_F32 = 0x7D,
     WAH_VAL_TYPE_F64 = 0x7C,
-    WAH_VAL_TYPE_ANYFUNC = 0x70, // For table elements
+    WAH_VAL_TYPE_FUNCREF = 0x70, // For table elements (function references)
     WAH_VAL_TYPE_FUNC = 0x60,    // For function types
     WAH_VAL_TYPE_BLOCK_TYPE = 0x40, // Special type for blocks
     WAH_VAL_TYPE_ANY = -5 // Represents any type for stack-polymorphic validation
@@ -253,7 +253,7 @@ typedef enum {
     WAH_OP_UNREACHABLE = 0x00, WAH_OP_NOP = 0x01, WAH_OP_BLOCK = 0x02, WAH_OP_LOOP = 0x03,
     WAH_OP_IF = 0x04, WAH_OP_ELSE = 0x05,
     WAH_OP_END = 0x0B, WAH_OP_BR = 0x0C, WAH_OP_BR_IF = 0x0D, WAH_OP_BR_TABLE = 0x0E,
-    WAH_OP_RETURN = 0x0F, WAH_OP_CALL = 0x10,
+    WAH_OP_RETURN = 0x0F, WAH_OP_CALL = 0x10, WAH_OP_CALL_INDIRECT = 0x11,
 
     // Parametric Operators
     WAH_OP_DROP = 0x1A,
@@ -313,13 +313,27 @@ typedef enum {
     WAH_OP_F64_MIN = 0xA4, WAH_OP_F64_MAX = 0xA5, WAH_OP_F64_COPYSIGN = 0xA6,
 } wah_opcode_t;
 
-// --- WebAssembly Value Representation ---
 typedef union {
     int32_t i32;
     int64_t i64;
     float f32;
     double f64;
 } wah_value_t;
+
+// --- WebAssembly Table Structures ---
+typedef struct {
+    wah_val_type_t elem_type;
+    uint32_t min_elements;
+    uint32_t max_elements; // 0 if no maximum
+} wah_table_type_t;
+
+// --- WebAssembly Element Segment Structure ---
+typedef struct {
+    uint32_t table_idx;
+    uint32_t offset; // Result of the offset_expr
+    uint32_t num_elems;
+    uint32_t *func_indices; // Array of function indices
+} wah_element_segment_t;
 
 // --- Operand Stack ---
 typedef struct {
@@ -373,6 +387,9 @@ typedef struct wah_exec_context_s {
     // Memory
     uint8_t *memory_base; // Pointer to the allocated memory
     uint32_t memory_size; // Current size of the memory in bytes
+
+    wah_value_t **tables;
+    uint32_t table_count;
 } wah_exec_context_t;
 
 // --- Section IDs ---
@@ -430,12 +447,16 @@ typedef struct wah_module_s {
     uint32_t code_count;
     uint32_t global_count;
     uint32_t memory_count;
+    uint32_t table_count;
+    uint32_t element_segment_count;
 
     wah_func_type_t *types;
     uint32_t *function_type_indices; // Index into the types array
     wah_code_body_t *code_bodies;
     wah_global_t *globals;
     wah_memory_type_t *memories;
+    wah_table_type_t *tables;
+    wah_element_segment_t *element_segments;
 
     // Add other sections as they are implemented
 } wah_module_t;
@@ -472,10 +493,17 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
 
 // Internal section parsing functions
 static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
 static wah_error_t wah_parse_function_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
 static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+static wah_error_t wah_parse_start_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+static wah_error_t wah_parse_datacount_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
 
 // --- Interpreter Functions ---
 // Creates and initializes an execution context.
@@ -753,12 +781,12 @@ static inline double wah_nearest_f64(double d) {
 // --- Helper Macros ---
 #define WAH_CHECK(expr) do { \
     wah_error_t _err = (expr); \
-    if (_err != WAH_OK) { WAH_LOG("WAH_CHECK(%s) failed due to %s", #expr, wah_strerror(_err)); return _err; } \
+    if (_err != WAH_OK) { WAH_LOG("WAH_CHECK(%s) failed due to: %s", #expr, wah_strerror(_err)); return _err; } \
 } while(0)
 
 #define WAH_CHECK_GOTO(expr, label) do { \
     err = (expr); \
-    if (err != WAH_OK) { WAH_LOG("WAH_CHECK_GOTO(%s, %s) failed due to %s", #expr, #label, wah_strerror(err)); goto label; } \
+    if (err != WAH_OK) { WAH_LOG("WAH_CHECK_GOTO(%s, %s) failed due to: %s", #expr, #label, wah_strerror(err)); goto label; } \
 } while(0)
 
 #define WAH_BOUNDS_CHECK(cond, error) do { \
@@ -1016,6 +1044,46 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             // Push results onto type stack
             for (uint32_t j = 0; j < called_func_type->result_count; ++j) {
                 WAH_CHECK(wah_validation_push_type(vctx, called_func_type->result_types[j]));
+            }
+            return WAH_OK;
+        }
+        case WAH_OP_CALL_INDIRECT: {
+            uint32_t type_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &type_idx));
+            uint32_t table_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
+
+            // Validate table index
+            if (table_idx >= vctx->module->table_count) {
+                return WAH_ERROR_VALIDATION_FAILED;
+            }
+            // Only funcref tables are supported for now
+            if (vctx->module->tables[table_idx].elem_type != WAH_VAL_TYPE_FUNCREF) {
+                return WAH_ERROR_VALIDATION_FAILED;
+            }
+
+            // Validate type index
+            if (type_idx >= vctx->module->type_count) {
+                return WAH_ERROR_VALIDATION_FAILED;
+            }
+
+            // Pop function index (i32) from stack
+            wah_val_type_t func_idx_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &func_idx_type));
+            WAH_CHECK(wah_validate_type_match(func_idx_type, WAH_VAL_TYPE_I32));
+
+            // Get the expected function type
+            const wah_func_type_t *expected_func_type = &vctx->module->types[type_idx];
+
+            // Pop parameters from type stack
+            for (int32_t j = expected_func_type->param_count - 1; j >= 0; --j) {
+                wah_val_type_t popped_type;
+                WAH_CHECK(wah_validation_pop_type(vctx, &popped_type));
+                WAH_CHECK(wah_validate_type_match(popped_type, expected_func_type->param_types[j]));
+            }
+            // Push results onto type stack
+            for (uint32_t j = 0; j < expected_func_type->result_count; ++j) {
+                WAH_CHECK(wah_validation_push_type(vctx, expected_func_type->result_types[j]));
             }
             return WAH_OK;
         }
@@ -1586,11 +1654,115 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
             if (flags & 0x01) { // If resizable, read max_pages
                 WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->memories[i].max_pages));
             } else {
-                module->memories[i].max_pages = module->memories[i].min_pages; // Fixed size
+                module->memories[i].max_pages = module->memories[i].min_pages; // Fixed size, max is same as min
             }
         }
     }
     return WAH_OK;
+}
+
+static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    uint32_t count;
+    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
+    module->table_count = count;
+    if (count > 0) {
+        module->tables = (wah_table_type_t*)malloc(sizeof(wah_table_type_t) * count);
+        if (!module->tables) return WAH_ERROR_OUT_OF_MEMORY;
+        memset(module->tables, 0, sizeof(wah_table_type_t) * count);
+
+        for (uint32_t i = 0; i < count; ++i) {
+            if (*ptr >= section_end) return WAH_ERROR_UNEXPECTED_EOF;
+            module->tables[i].elem_type = (wah_val_type_t)*(*ptr)++;
+            // Only funcref is supported for now
+            if (module->tables[i].elem_type != WAH_VAL_TYPE_FUNCREF) {
+                return WAH_ERROR_VALIDATION_FAILED;
+            }
+
+            if (*ptr >= section_end) return WAH_ERROR_UNEXPECTED_EOF;
+            uint8_t flags = *(*ptr)++; // Flags for table type (0x00 for fixed, 0x01 for resizable)
+
+            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->tables[i].min_elements));
+
+            if (flags & 0x01) { // If resizable, read max_elements
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->tables[i].max_elements));
+            } else {
+                module->tables[i].max_elements = module->tables[i].min_elements; // Fixed size, max is same as min
+            }
+        }
+    }
+    return WAH_OK;
+}
+
+// Placeholder for unimplemented sections
+static wah_error_t wah_parse_unimplemented_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    (void)module; // Suppress unused parameter warning
+    *ptr = section_end; // Skip the section
+    return WAH_OK;
+}
+
+static wah_error_t wah_parse_custom_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    return wah_parse_unimplemented_section(ptr, section_end, module);
+}
+
+static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    return wah_parse_unimplemented_section(ptr, section_end, module);
+}
+
+static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    return wah_parse_unimplemented_section(ptr, section_end, module);
+}
+
+static wah_error_t wah_parse_start_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    return wah_parse_unimplemented_section(ptr, section_end, module);
+}
+
+static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    uint32_t count;
+    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
+    module->element_segment_count = count;
+    if (count > 0) {
+        module->element_segments = (wah_element_segment_t*)malloc(sizeof(wah_element_segment_t) * count);
+        if (!module->element_segments) return WAH_ERROR_OUT_OF_MEMORY;
+        memset(module->element_segments, 0, sizeof(wah_element_segment_t) * count);
+
+        for (uint32_t i = 0; i < count; ++i) {
+            wah_element_segment_t *segment = &module->element_segments[i];
+
+            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->table_idx));
+            // For now, only table 0 is supported
+            if (segment->table_idx != 0) return WAH_ERROR_VALIDATION_FAILED;
+
+            // Parse offset_expr (expected to be i32.const X end)
+            if (*ptr >= section_end) return WAH_ERROR_UNEXPECTED_EOF;
+            wah_opcode_t opcode = (wah_opcode_t)*(*ptr)++;
+            if (opcode != WAH_OP_I32_CONST) return WAH_ERROR_VALIDATION_FAILED;
+
+            int32_t offset_val;
+            WAH_CHECK(wah_decode_sleb128_32(ptr, section_end, &offset_val));
+            segment->offset = (uint32_t)offset_val;
+
+            if (*ptr >= section_end) return WAH_ERROR_UNEXPECTED_EOF;
+            if (*(*ptr)++ != WAH_OP_END) return WAH_ERROR_VALIDATION_FAILED;
+
+            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->num_elems));
+            if (segment->num_elems > 0) {
+                segment->func_indices = (uint32_t*)malloc(sizeof(uint32_t) * segment->num_elems);
+                if (!segment->func_indices) return WAH_ERROR_OUT_OF_MEMORY;
+                for (uint32_t j = 0; j < segment->num_elems; ++j) {
+                    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->func_indices[j]));
+                }
+            }
+        }
+    }
+    return WAH_OK;
+}
+
+static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    return wah_parse_unimplemented_section(ptr, section_end, module);
+}
+
+static wah_error_t wah_parse_datacount_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    return wah_parse_unimplemented_section(ptr, section_end, module);
 }
 
 // Pre-parsing function to convert bytecode to optimized structure
@@ -1748,6 +1920,13 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 arg_size = sizeof(uint32_t);
                 break;
             }
+            case WAH_OP_CALL_INDIRECT: {
+                uint32_t type_idx, table_idx;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &type_idx), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &table_idx), cleanup);
+                arg_size = sizeof(uint32_t) * 2; // Two uint32_t arguments
+                break;
+            }
             case WAH_OP_I32_CONST: {
                 int32_t val;
                 WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &val), cleanup);
@@ -1824,6 +2003,16 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 uint32_t val;
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &val), cleanup);
                 wah_write_u32_le(write_ptr, val);
+                write_ptr += sizeof(uint32_t);
+                break;
+            }
+            case WAH_OP_CALL_INDIRECT: {
+                uint32_t type_idx, table_idx;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &type_idx), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &table_idx), cleanup);
+                wah_write_u32_le(write_ptr, type_idx);
+                write_ptr += sizeof(uint32_t);
+                wah_write_u32_le(write_ptr, table_idx);
                 write_ptr += sizeof(uint32_t);
                 break;
             }
@@ -1934,32 +2123,46 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
             goto cleanup_parse;
         }
 
+        WAH_LOG("Parsing section ID: %d, size: %u", section_id, section_size);
         switch (section_id) {
+            case WAH_SECTION_CUSTOM:
+                WAH_CHECK_GOTO(wah_parse_custom_section(&ptr, section_payload_end, module), cleanup_parse);
+                break;
             case WAH_SECTION_TYPE:
                 WAH_CHECK_GOTO(wah_parse_type_section(&ptr, section_payload_end, module), cleanup_parse);
+                break;
+            case WAH_SECTION_IMPORT:
+                WAH_CHECK_GOTO(wah_parse_import_section(&ptr, section_payload_end, module), cleanup_parse);
                 break;
             case WAH_SECTION_FUNCTION:
                 WAH_CHECK_GOTO(wah_parse_function_section(&ptr, section_payload_end, module), cleanup_parse);
                 break;
-            case WAH_SECTION_CODE:
-                WAH_CHECK_GOTO(wah_parse_code_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_GLOBAL:
-                WAH_CHECK_GOTO(wah_parse_global_section(&ptr, section_payload_end, module), cleanup_parse);
+            case WAH_SECTION_TABLE:
+                WAH_CHECK_GOTO(wah_parse_table_section(&ptr, section_payload_end, module), cleanup_parse);
                 break;
             case WAH_SECTION_MEMORY:
                 WAH_CHECK_GOTO(wah_parse_memory_section(&ptr, section_payload_end, module), cleanup_parse);
                 break;
-            case WAH_SECTION_CUSTOM:
-            case WAH_SECTION_IMPORT:
-            case WAH_SECTION_TABLE:
+            case WAH_SECTION_GLOBAL:
+                WAH_CHECK_GOTO(wah_parse_global_section(&ptr, section_payload_end, module), cleanup_parse);
+                break;
             case WAH_SECTION_EXPORT:
+                WAH_CHECK_GOTO(wah_parse_export_section(&ptr, section_payload_end, module), cleanup_parse);
+                break;
             case WAH_SECTION_START:
+                WAH_CHECK_GOTO(wah_parse_start_section(&ptr, section_payload_end, module), cleanup_parse);
+                break;
             case WAH_SECTION_ELEMENT:
+                WAH_CHECK_GOTO(wah_parse_element_section(&ptr, section_payload_end, module), cleanup_parse);
+                break;
+            case WAH_SECTION_CODE:
+                WAH_CHECK_GOTO(wah_parse_code_section(&ptr, section_payload_end, module), cleanup_parse);
+                break;
             case WAH_SECTION_DATA:
+                WAH_CHECK_GOTO(wah_parse_data_section(&ptr, section_payload_end, module), cleanup_parse);
+                break;
             case WAH_SECTION_DATACOUNT:
-                // Skip unknown or unimplemented sections for now
-                ptr += section_size;
+                WAH_CHECK_GOTO(wah_parse_datacount_section(&ptr, section_payload_end, module), cleanup_parse);
                 break;
             default:
                 // Unknown section ID
@@ -2027,6 +2230,72 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         memset(exec_ctx->memory_base, 0, exec_ctx->memory_size);
     }
 
+    if (module->table_count > 0) {
+        exec_ctx->tables = (wah_value_t**)malloc(sizeof(wah_value_t*) * module->table_count);
+        if (!exec_ctx->tables) {
+            free(exec_ctx->value_stack);
+            free(exec_ctx->call_stack);
+            free(exec_ctx->globals);
+            free(exec_ctx->memory_base);
+            return WAH_ERROR_OUT_OF_MEMORY;
+        }
+        memset(exec_ctx->tables, 0, sizeof(wah_value_t*) * module->table_count);
+
+        for (uint32_t i = 0; i < module->table_count; ++i) {
+            uint32_t min_elements = module->tables[i].min_elements;
+            exec_ctx->tables[i] = (wah_value_t*)malloc(sizeof(wah_value_t) * min_elements);
+            if (!exec_ctx->tables[i]) {
+                for (uint32_t j = 0; j < i; ++j) {
+                    free(exec_ctx->tables[j]);
+                }
+                free(exec_ctx->tables);
+                free(exec_ctx->value_stack);
+                free(exec_ctx->call_stack);
+                free(exec_ctx->globals);
+                free(exec_ctx->memory_base);
+                return WAH_ERROR_OUT_OF_MEMORY;
+            }
+            memset(exec_ctx->tables[i], 0, sizeof(wah_value_t) * min_elements); // Initialize to null (0)
+        }
+        exec_ctx->table_count = module->table_count;
+
+        // Initialize tables with element segments
+        for (uint32_t i = 0; i < module->element_segment_count; ++i) {
+            const wah_element_segment_t *segment = &module->element_segments[i];
+            // For now, only table 0 is supported, so segment->table_idx should be 0
+            if (segment->table_idx >= exec_ctx->table_count) {
+                // This should ideally be caught during validation, but as a runtime check
+                // it's good to have.
+                for (uint32_t j = 0; j < exec_ctx->table_count; ++j) {
+                    free(exec_ctx->tables[j]);
+                }
+                free(exec_ctx->tables);
+                free(exec_ctx->value_stack);
+                free(exec_ctx->call_stack);
+                free(exec_ctx->globals);
+                free(exec_ctx->memory_base);
+                return WAH_ERROR_VALIDATION_FAILED; // Or a more specific error
+            }
+
+            // Check bounds for copying elements
+            if (segment->offset + segment->num_elems > module->tables[segment->table_idx].min_elements) {
+                for (uint32_t j = 0; j < exec_ctx->table_count; ++j) {
+                    free(exec_ctx->tables[j]);
+                }
+                free(exec_ctx->tables);
+                free(exec_ctx->value_stack);
+                free(exec_ctx->call_stack);
+                free(exec_ctx->globals);
+                free(exec_ctx->memory_base);
+                return WAH_ERROR_VALIDATION_FAILED; // Or a more specific error
+            }
+
+            for (uint32_t j = 0; j < segment->num_elems; ++j) {
+                exec_ctx->tables[segment->table_idx][segment->offset + j].i32 = (int32_t)segment->func_indices[j];
+            }
+        }
+    }
+
     return WAH_OK;
 }
 
@@ -2036,6 +2305,12 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     free(exec_ctx->call_stack);
     free(exec_ctx->globals);
     free(exec_ctx->memory_base);
+    if (exec_ctx->tables) {
+        for (uint32_t i = 0; i < exec_ctx->table_count; ++i) {
+            free(exec_ctx->tables[i]);
+        }
+        free(exec_ctx->tables);
+    }
     memset(exec_ctx, 0, sizeof(wah_exec_context_t));
 }
 
@@ -2173,6 +2448,81 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 frame->bytecode_ip = bytecode_ip;
 
                 err = wah_push_frame(ctx, called_func_idx, new_locals_offset);
+                if (err != WAH_OK) goto cleanup;
+
+                uint32_t num_locals = called_code->local_count;
+                if (num_locals > 0) {
+                    if (ctx->sp + num_locals > ctx->value_stack_capacity) {
+                        err = WAH_ERROR_TOO_LARGE;
+                        goto cleanup;
+                    }
+                    memset(&ctx->value_stack[ctx->sp], 0, sizeof(wah_value_t) * num_locals);
+                    ctx->sp += num_locals;
+                }
+
+                RELOAD_FRAME();
+                break;
+            }
+            case WAH_OP_CALL_INDIRECT: {
+                uint32_t type_idx = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
+                uint32_t table_idx = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
+
+                // Pop function index from stack
+                uint32_t func_table_idx = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+
+                // Validate table_idx
+                if (table_idx >= ctx->table_count) {
+                    err = WAH_ERROR_TRAP; // Table index out of bounds
+                    goto cleanup;
+                }
+
+                // Validate func_table_idx against table size
+                if (func_table_idx >= ctx->module->tables[table_idx].min_elements) { // Use min_elements as current size
+                    err = WAH_ERROR_TRAP; // Function index out of table bounds
+                    goto cleanup;
+                }
+
+                // Get the actual function index from the table
+                uint32_t actual_func_idx = (uint32_t)ctx->tables[table_idx][func_table_idx].i32;
+
+                // Validate actual_func_idx against module's function count
+                if (actual_func_idx >= ctx->module->function_count) {
+                    err = WAH_ERROR_TRAP; // Invalid function index in table
+                    goto cleanup;
+                }
+
+                // Get expected function type (from instruction)
+                const wah_func_type_t *expected_func_type = &ctx->module->types[type_idx];
+                // Get actual function type (from module's function type indices) (function_type_indices stores type_idx for each function)
+                const wah_func_type_t *actual_func_type = &ctx->module->types[ctx->module->function_type_indices[actual_func_idx]];
+
+                // Type check: compare expected and actual function types
+                if (expected_func_type->param_count != actual_func_type->param_count ||
+                    expected_func_type->result_count != actual_func_type->result_count) {
+                    err = WAH_ERROR_TRAP; // Type mismatch (param/result count)
+                    goto cleanup;
+                }
+                for (uint32_t i = 0; i < expected_func_type->param_count; ++i) {
+                    if (expected_func_type->param_types[i] != actual_func_type->param_types[i]) {
+                        err = WAH_ERROR_TRAP; // Type mismatch (param type)
+                        goto cleanup;
+                    }
+                }
+                for (uint32_t i = 0; i < expected_func_type->result_count; ++i) {
+                    if (expected_func_type->result_types[i] != actual_func_type->result_types[i]) {
+                        err = WAH_ERROR_TRAP; // Type mismatch (result type)
+                        goto cleanup;
+                    }
+                }
+                // Perform the call using actual_func_idx
+                const wah_code_body_t *called_code = &ctx->module->code_bodies[actual_func_idx];
+                uint32_t new_locals_offset = ctx->sp - expected_func_type->param_count; // Use expected_func_type for stack manipulation
+
+                frame->bytecode_ip = bytecode_ip;
+
+                err = wah_push_frame(ctx, actual_func_idx, new_locals_offset);
                 if (err != WAH_OK) goto cleanup;
 
                 uint32_t num_locals = called_code->local_count;
@@ -2574,6 +2924,14 @@ void wah_free_module(wah_module_t *module) {
 
     free(module->globals);
     free(module->memories);
+    free(module->tables);
+
+    if (module->element_segments) {
+        for (uint32_t i = 0; i < module->element_segment_count; ++i) {
+            free(module->element_segments[i].func_indices);
+        }
+        free(module->element_segments);
+    }
 
     // Reset all fields to 0/NULL
     memset(module, 0, sizeof(wah_module_t));

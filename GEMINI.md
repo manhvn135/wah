@@ -25,7 +25,7 @@ All public API functions return a `wah_error_t` enum value. `WAH_OK` indicates s
 ### Testing
 
 - To run all tests, execute `test.bat` (or simply `test`) from the command line.
-- To run tests that start with a specific prefix (e.g., `wah_test_control_flow.c`), execute `test <prefix>` (e.g., `test control_flow`).
+- To run tests that start with a specific prefix (e.g., `wah_test_control_flow.c`), execute `test <prefix>` (e.g., `test control_flow`, NOT `test wah_test_control_flow` nor `test test_control_flow`).
 - **Debugging with WAH_DEBUG:** For debugging purposes, you can declare the `WAH_DEBUG` macro. When running test scripts, you can enable this by executing `test -g ...` instead of `test ...`.
   - When `WAH_DEBUG` is enabled, `WAH_LOG` allows you to print logs in a `(line number) content` format using `printf`-like syntax.
   - Similarly, `WAH_CHECK` and similar macros will automatically output the failure location and error codes using `WAH_LOG` when `WAH_DEBUG` is active.
