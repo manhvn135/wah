@@ -79,9 +79,9 @@ int main() {
     params[1].i32 = 0; // Division by zero
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
-        printf("✓ Correctly trapped on division by zero (error %d)\n", err);
+        printf("- Correctly trapped on division by zero (error %d)\n", err);
     } else {
-        printf("✗ Expected trap but got error %d\n", err);
+        printf("x Expected trap but got error %d\n", err);
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
@@ -108,9 +108,9 @@ int main() {
     params[1].i32 = -1; // This causes overflow: INT_MIN / -1 = +2^31 (unrepresentable)
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
-        printf("✓ Correctly trapped on signed integer overflow (error %d)\n", err);
+        printf("- Correctly trapped on signed integer overflow (error %d)\n", err);
     } else {
-        printf("✗ Expected trap but got error %d\n", err);
+        printf("x Expected trap but got error %d\n", err);
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
@@ -137,9 +137,9 @@ int main() {
     params[1].i32 = 0; // Division by zero
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
-        printf("✓ Correctly trapped on unsigned division by zero (error %d)\n", err);
+        printf("- Correctly trapped on unsigned division by zero (error %d)\n", err);
     } else {
-        printf("✗ Expected trap but got error %d\n", err);
+        printf("x Expected trap but got error %d\n", err);
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
@@ -166,9 +166,9 @@ int main() {
     params[1].i32 = 0; // Division by zero
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
-        printf("✓ Correctly trapped on remainder by zero (error %d)\n", err);
+        printf("- Correctly trapped on remainder by zero (error %d)\n", err);
     } else {
-        printf("✗ Expected trap but got error %d\n", err);
+        printf("x Expected trap but got error %d\n", err);
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
@@ -195,9 +195,9 @@ int main() {
     params[1].i32 = 4; // Valid division: 20 / 4 = 5
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_OK) {
-        printf("✓ Valid division works: 20 / 4 = %d\n", result.i32);
+        printf("- Valid division works: 20 / 4 = %d\n", result.i32);
     } else {
-        printf("✗ Valid division failed with error %d\n", err);
+        printf("x Valid division failed with error %d\n", err);
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;
@@ -224,9 +224,9 @@ int main() {
     params[1].i32 = -1; // This should return 0, not trap
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_OK && result.i32 == 0) {
-        printf("✓ INT_MIN %% -1 correctly returns 0 (no trap)\n");
+        printf("- INT_MIN %% -1 correctly returns 0 (no trap)\n");
     } else {
-        printf("✗ INT_MIN %% -1 failed: error %d, result %d\n", err, result.i32);
+        printf("x INT_MIN %% -1 failed: error %d, result %d\n", err, result.i32);
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return 1;

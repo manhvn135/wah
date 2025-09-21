@@ -382,6 +382,7 @@ int test_i64_div_overflow(wah_module_t* module, wah_exec_context_t* ctx) {
 int test_i64_const_drop(wah_module_t* module, wah_exec_context_t* ctx) {
     // This test only needs to parse successfully.
     (void)module;
+    (void)ctx;
     return 0;
 }
 
@@ -618,7 +619,7 @@ int test_i32_load_unaligned(wah_module_t* module, wah_exec_context_t* ctx) {
     // Expected value: 0xCCDD1234 (assuming little-endian and memory[0]=78, memory[1]=56, memory[2]=34, memory[3]=12, memory[4]=DD, memory[5]=CC, memory[6]=BB, memory[7]=AA)
     // If we load from address 2, we get memory[2], memory[3], memory[4], memory[5]
     // So, 0xCCDD1234
-    CHECK(result.i32 == 0xCCDD1234, "i32.load from unaligned address 2 result");
+    CHECK(result.i32 == (int32_t)0xCCDD1234, "i32.load from unaligned address 2 result");
 
     return failed_checks;
 }

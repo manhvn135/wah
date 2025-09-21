@@ -12,12 +12,6 @@ static uint32_t float_to_bits(float f) {
     return bits;
 }
 
-// Helper to convert uint32_t bit pattern to float
-static float bits_to_float(uint32_t bits) {
-    float f;
-    memcpy(&f, &bits, sizeof(float));
-    return f;
-}
 
 // WebAssembly canonical NaN bit patterns (from wah.h)
 #define TEST_WASM_F32_CANONICAL_NAN_BITS 0x7fc00000U
