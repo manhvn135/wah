@@ -44,47 +44,51 @@ typedef struct {
 // --- LEB128 Decoding ---
 // Helper function to decode an unsigned LEB128 integer
 static inline wah_error_t wah_decode_uleb128(const uint8_t **ptr, const uint8_t *end, uint32_t *result) {
-    *result = 0;
+    uint64_t val = 0;
     uint32_t shift = 0;
     uint8_t byte;
 
-    do {
-        if (*ptr >= end) {
-            return WAH_ERROR_UNEXPECTED_EOF;
-        }
-        if (shift >= 32) {
-            return WAH_ERROR_TOO_LARGE;
-        }
+    for (int i = 0; i < 5; ++i) { // Max 5 bytes for a 32-bit value
+        if (*ptr >= end) return WAH_ERROR_UNEXPECTED_EOF;
         byte = *(*ptr)++;
-        *result |= (byte & 0x7F) << shift;
+        val |= (uint64_t)(byte & 0x7F) << shift;
+        if ((byte & 0x80) == 0) {
+            if (val > UINT32_MAX) return WAH_ERROR_TOO_LARGE;
+            *result = (uint32_t)val;
+            return WAH_OK;
+        }
         shift += 7;
-    } while (byte & 0x80);
-
-    return WAH_OK;
+    }
+    // If we get here, it means the 5th byte had the continuation bit set.
+    return WAH_ERROR_TOO_LARGE;
 }
 
 // Helper function to decode a signed LEB128 integer (32-bit)
 static inline wah_error_t wah_decode_sleb128_32(const uint8_t **ptr, const uint8_t *end, int32_t *result) {
-    uint32_t val = 0;
+    uint64_t val = 0;
     uint32_t shift = 0;
     uint8_t byte;
 
-    do {
+    for (int i = 0; i < 5; ++i) { // Max 5 bytes for a 32-bit value
         if (*ptr >= end) return WAH_ERROR_UNEXPECTED_EOF;
-        if (shift >= 32) return WAH_ERROR_TOO_LARGE;
         byte = *(*ptr)++;
-        val |= (uint32_t)(byte & 0x7F) << shift;
+        val |= (uint64_t)(byte & 0x7F) << shift;
         shift += 7;
-    } while (byte & 0x80);
-
-    if (shift < 32) {
-        uint32_t sign_bit = 1U << (shift - 1);
-        if ((val & sign_bit) != 0) {
-            val |= ~0U << shift;
+        if ((byte & 0x80) == 0) {
+            // Sign extend
+            if (shift < 64) {
+                uint64_t sign_bit = 1ULL << (shift - 1);
+                if ((val & sign_bit) != 0) {
+                    val |= ~0ULL << shift;
+                }
+            }
+            if ((int64_t)val < INT32_MIN || (int64_t)val > INT32_MAX) return WAH_ERROR_TOO_LARGE;
+            *result = (int32_t)val;
+            return WAH_OK;
         }
     }
-    *result = (int32_t)val;
-    return WAH_OK;
+    // If we get here, it means the 5th byte had the continuation bit set.
+    return WAH_ERROR_TOO_LARGE;
 }
 
 // Helper function to decode an unsigned LEB128 integer (64-bit)
