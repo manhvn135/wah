@@ -1882,6 +1882,13 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             if (*(*ptr)++ != WAH_OP_END) return WAH_ERROR_VALIDATION_FAILED;
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->num_elems));
+
+            // Validate that the segment fits within the table's limits
+            if (segment->table_idx >= module->table_count) return WAH_ERROR_VALIDATION_FAILED;
+            if ((uint64_t)segment->offset + segment->num_elems > module->tables[segment->table_idx].min_elements) {
+                return WAH_ERROR_VALIDATION_FAILED;
+            }
+
             if (segment->num_elems > 0) {
                 segment->func_indices = (uint32_t*)malloc(sizeof(uint32_t) * segment->num_elems);
                 if (!segment->func_indices) return WAH_ERROR_OUT_OF_MEMORY;
@@ -2377,33 +2384,10 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         // Initialize tables with element segments
         for (uint32_t i = 0; i < module->element_segment_count; ++i) {
             const wah_element_segment_t *segment = &module->element_segments[i];
-            // For now, only table 0 is supported, so segment->table_idx should be 0
-            if (segment->table_idx >= exec_ctx->table_count) {
-                // This should ideally be caught during validation, but as a runtime check
-                // it's good to have.
-                for (uint32_t j = 0; j < exec_ctx->table_count; ++j) {
-                    free(exec_ctx->tables[j]);
-                }
-                free(exec_ctx->tables);
-                free(exec_ctx->value_stack);
-                free(exec_ctx->call_stack);
-                free(exec_ctx->globals);
-                free(exec_ctx->memory_base);
-                return WAH_ERROR_VALIDATION_FAILED; // Or a more specific error
-            }
-
-            // Check bounds for copying elements
-            if (segment->offset + segment->num_elems > module->tables[segment->table_idx].min_elements) {
-                for (uint32_t j = 0; j < exec_ctx->table_count; ++j) {
-                    free(exec_ctx->tables[j]);
-                }
-                free(exec_ctx->tables);
-                free(exec_ctx->value_stack);
-                free(exec_ctx->call_stack);
-                free(exec_ctx->globals);
-                free(exec_ctx->memory_base);
-                return WAH_ERROR_VALIDATION_FAILED; // Or a more specific error
-            }
+            
+            // Validation should be done at parse time. Assert here as a safety net.
+            assert(segment->table_idx < exec_ctx->table_count);
+            assert((uint64_t)segment->offset + segment->num_elems <= module->tables[segment->table_idx].min_elements);
 
             for (uint32_t j = 0; j < segment->num_elems; ++j) {
                 exec_ctx->tables[segment->table_idx][segment->offset + j].i32 = (int32_t)segment->func_indices[j];
