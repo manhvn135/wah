@@ -858,6 +858,85 @@ static inline wah_error_t wah_trunc_f64_to_u64(double val, uint64_t *result) {
     if (!(cond)) { err = (error); WAH_LOG("WAH_BOUNDS_CHECK_GOTO(%s, %s, %s) failed", #cond, #error, #label); goto label; } \
 } while(0)
 
+// --- Safe Memory Allocation ---
+static inline wah_error_t wah_malloc(size_t count, size_t elemsize, void** out_ptr) {
+    *out_ptr = NULL;
+    if (count == 0) {
+        return WAH_OK;
+    }
+    if (elemsize > 0 && count > SIZE_MAX / elemsize) {
+        return WAH_ERROR_OUT_OF_MEMORY;
+    }
+    size_t total_size = count * elemsize;
+    *out_ptr = malloc(total_size);
+    if (!*out_ptr) {
+        return WAH_ERROR_OUT_OF_MEMORY;
+    }
+    return WAH_OK;
+}
+
+static inline wah_error_t wah_realloc(size_t count, size_t elemsize, void** p_ptr) {
+    if (count == 0) {
+        free(*p_ptr);
+        *p_ptr = NULL;
+        return WAH_OK;
+    }
+    if (elemsize > 0 && count > SIZE_MAX / elemsize) {
+        return WAH_ERROR_OUT_OF_MEMORY;
+    }
+    size_t total_size = count * elemsize;
+    void* new_ptr = realloc(*p_ptr, total_size);
+    if (!new_ptr) {
+        return WAH_ERROR_OUT_OF_MEMORY;
+    }
+    *p_ptr = new_ptr;
+    return WAH_OK;
+}
+
+#define WAH_MALLOC_ARRAY(ptr, count) \
+    do { \
+        void *_alloc_ptr; \
+        wah_error_t _alloc_err = wah_malloc((count), sizeof(*(ptr)), &_alloc_ptr); \
+        if (_alloc_err != WAH_OK) { \
+            WAH_LOG("WAH_MALLOC_ARRAY(%s, %s) failed due to OOM", #ptr, #count); \
+            return _alloc_err; \
+        } \
+        (ptr) = _alloc_ptr; \
+    } while (0)
+
+#define WAH_REALLOC_ARRAY(ptr, count) \
+    do { \
+        void *_alloc_ptr = (ptr); \
+        wah_error_t _alloc_err = wah_realloc((count), sizeof(*(ptr)), &_alloc_ptr); \
+        if (_alloc_err != WAH_OK) { \
+            WAH_LOG("WAH_REALLOC_ARRAY(%s, %s) failed due to OOM", #ptr, #count); \
+            return _alloc_err; \
+        } \
+        (ptr) = _alloc_ptr; \
+    } while (0)
+
+#define WAH_MALLOC_ARRAY_GOTO(ptr, count, label) \
+    do { \
+        void* _alloc_ptr; \
+        err = wah_malloc((count), sizeof(*(ptr)), &_alloc_ptr); \
+        if (err != WAH_OK) { \
+            WAH_LOG("WAH_MALLOC_ARRAY_GOTO(%s, %s, %s) failed due to OOM", #ptr, #count, #label); \
+            goto label; \
+        } \
+        (ptr) = _alloc_ptr; \
+    } while (0)
+
+#define WAH_REALLOC_ARRAY_GOTO(ptr, count, label) \
+    do { \
+        void* _alloc_ptr = ptr; \
+        err = wah_realloc((count), sizeof(*(ptr)), &_alloc_ptr); \
+        if (err != WAH_OK) { \
+            WAH_LOG("WAH_REALLOC_ARRAY_GOTO(%s, %s, %s) failed due to OOM", #ptr, #count, #label); \
+            goto label; \
+        } \
+        (ptr) = _alloc_ptr; \
+    } while (0)
+
 const char *wah_strerror(wah_error_t err) {
     switch (err) {
         case WAH_OK: return "Success";
@@ -937,8 +1016,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
     
     module->type_count = count;
-    module->types = (wah_func_type_t*)malloc(sizeof(wah_func_type_t) * count);
-    if (!module->types) return WAH_ERROR_OUT_OF_MEMORY;
+    WAH_MALLOC_ARRAY(module->types, count);
     memset(module->types, 0, sizeof(wah_func_type_t) * count);
 
     for (uint32_t i = 0; i < count; ++i) {
@@ -952,9 +1030,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         WAH_CHECK(wah_decode_uleb128(ptr, section_end, &param_count_type));
         
         module->types[i].param_count = param_count_type;
-        module->types[i].param_types = (wah_val_type_t*)malloc(sizeof(wah_val_type_t) * param_count_type);
-        if (!module->types[i].param_types) return WAH_ERROR_OUT_OF_MEMORY;
-        
+        WAH_MALLOC_ARRAY(module->types[i].param_types, param_count_type);
         for (uint32_t j = 0; j < param_count_type; ++j) {
             if (*ptr >= section_end) return WAH_ERROR_UNEXPECTED_EOF;
             wah_val_type_t type = (wah_val_type_t)**ptr;
@@ -975,8 +1051,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         }
         
         module->types[i].result_count = result_count_type;
-        module->types[i].result_types = (wah_val_type_t*)malloc(sizeof(wah_val_type_t) * result_count_type);
-        if (!module->types[i].result_types) return WAH_ERROR_OUT_OF_MEMORY;
+        WAH_MALLOC_ARRAY(module->types[i].result_types, result_count_type);
         
         for (uint32_t j = 0; j < result_count_type; ++j) {
             if (*ptr >= section_end) return WAH_ERROR_UNEXPECTED_EOF;
@@ -997,8 +1072,7 @@ static wah_error_t wah_parse_function_section(const uint8_t **ptr, const uint8_t
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
     
     module->function_count = count;
-    module->function_type_indices = (uint32_t*)malloc(sizeof(uint32_t) * count);
-    if (!module->function_type_indices) return WAH_ERROR_OUT_OF_MEMORY;
+    WAH_MALLOC_ARRAY(module->function_type_indices, count);
 
     for (uint32_t i = 0; i < count; ++i) {
         WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->function_type_indices[i]));
@@ -1412,8 +1486,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 
                 if (result_type != WAH_VAL_TYPE_BLOCK_TYPE) {
                     bt->result_count = 1;
-                    bt->result_types = (wah_val_type_t*)malloc(sizeof(wah_val_type_t));
-                    if (!bt->result_types) return WAH_ERROR_OUT_OF_MEMORY;
+                    WAH_MALLOC_ARRAY(bt->result_types, 1);
                     bt->result_types[0] = result_type;
                 }
             } else { // Function type index
@@ -1423,15 +1496,13 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 
                 bt->param_count = referenced_type->param_count;
                 if (bt->param_count > 0) {
-                    bt->param_types = (wah_val_type_t*)malloc(sizeof(wah_val_type_t) * bt->param_count);
-                    if (!bt->param_types) return WAH_ERROR_OUT_OF_MEMORY;
+                    WAH_MALLOC_ARRAY(bt->param_types, bt->param_count);
                     memcpy(bt->param_types, referenced_type->param_types, sizeof(wah_val_type_t) * bt->param_count);
                 }
                 
                 bt->result_count = referenced_type->result_count;
                 if (bt->result_count > 0) {
-                    bt->result_types = (wah_val_type_t*)malloc(sizeof(wah_val_type_t) * bt->result_count);
-                    if (!bt->result_types) return WAH_ERROR_OUT_OF_MEMORY;
+                    WAH_MALLOC_ARRAY(bt->result_types, bt->result_count);
                     memcpy(bt->result_types, referenced_type->result_types, sizeof(wah_val_type_t) * bt->result_count);
                 }
             }
@@ -1622,44 +1693,42 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 }
 
 static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    wah_error_t err = WAH_OK;
     uint32_t count;
-    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
-    if (count != module->function_count) return WAH_ERROR_VALIDATION_FAILED;
+    WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &count), cleanup);
+    if (count != module->function_count) {
+        err = WAH_ERROR_VALIDATION_FAILED;
+        goto cleanup;
+    }
     module->code_count = count;
-    module->code_bodies = (wah_code_body_t*)malloc(sizeof(wah_code_body_t) * count);
-    if (!module->code_bodies) return WAH_ERROR_OUT_OF_MEMORY;
+    WAH_MALLOC_ARRAY_GOTO(module->code_bodies, count, cleanup);
     memset(module->code_bodies, 0, sizeof(wah_code_body_t) * count);
 
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t body_size;
-        WAH_CHECK(wah_decode_uleb128(ptr, section_end, &body_size));
+        WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &body_size), cleanup);
 
         const uint8_t *code_body_end = *ptr + body_size;
 
         // Parse locals
         uint32_t num_local_entries;
-        WAH_CHECK(wah_decode_uleb128(ptr, code_body_end, &num_local_entries));
+        WAH_CHECK_GOTO(wah_decode_uleb128(ptr, code_body_end, &num_local_entries), cleanup);
 
         uint32_t current_local_count = 0;
         const uint8_t* ptr_count = *ptr;
         for (uint32_t j = 0; j < num_local_entries; ++j) {
             uint32_t local_type_count;
-            WAH_CHECK(wah_decode_uleb128(&ptr_count, code_body_end, &local_type_count));
+            WAH_CHECK_GOTO(wah_decode_uleb128(&ptr_count, code_body_end, &local_type_count), cleanup);
             ptr_count++; // Skip the actual type byte
             current_local_count += local_type_count;
         }
         module->code_bodies[i].local_count = current_local_count;
-        if (current_local_count > 0) {
-            module->code_bodies[i].local_types = (wah_val_type_t*)malloc(sizeof(wah_val_type_t) * current_local_count);
-            if (!module->code_bodies[i].local_types) return WAH_ERROR_OUT_OF_MEMORY;
-        } else {
-            module->code_bodies[i].local_types = NULL;
-        }
+        WAH_MALLOC_ARRAY_GOTO(module->code_bodies[i].local_types, current_local_count, cleanup);
 
         uint32_t local_idx = 0;
         for (uint32_t j = 0; j < num_local_entries; ++j) {
             uint32_t local_type_count;
-            WAH_CHECK(wah_decode_uleb128(ptr, code_body_end, &local_type_count));
+            WAH_CHECK_GOTO(wah_decode_uleb128(ptr, code_body_end, &local_type_count), cleanup);
             wah_val_type_t type = (wah_val_type_t)*(*ptr)++;
             for (uint32_t k = 0; k < local_type_count; ++k) {
                 module->code_bodies[i].local_types[local_idx++] = type;
@@ -1684,43 +1753,61 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
         while (code_ptr_validation < validation_end) {
             uint16_t current_opcode_val;
-            WAH_CHECK(wah_decode_opcode(&code_ptr_validation, validation_end, &current_opcode_val));
+            WAH_CHECK_GOTO(wah_decode_opcode(&code_ptr_validation, validation_end, &current_opcode_val), cleanup);
             
             if (current_opcode_val == WAH_OP_END) {
                  if (vctx.control_sp == 0) { // End of function
                     if (vctx.func_type->result_count == 0) {
-                        if (vctx.type_stack.sp != 0) return WAH_ERROR_VALIDATION_FAILED;
+                        if (vctx.type_stack.sp != 0) { // Unmatched control frames
+                            err = WAH_ERROR_VALIDATION_FAILED;
+                            goto cleanup;
+                        }
                     } else { // result_count == 1
                         // If unreachable, the stack is polymorphic, so we don't strictly check sp.
                         // We still pop to ensure the conceptual stack height is correct.
                         wah_val_type_t result_type;
-                        WAH_CHECK(wah_validation_pop_type(&vctx, &result_type));
-                        WAH_CHECK(wah_validate_type_match(result_type, vctx.func_type->result_types[0]));
+                        WAH_CHECK_GOTO(wah_validation_pop_type(&vctx, &result_type), cleanup);
+                        WAH_CHECK_GOTO(wah_validate_type_match(result_type, vctx.func_type->result_types[0]), cleanup);
                     }
                     break; // End of validation loop
                 }
             }
-            WAH_CHECK(wah_validate_opcode(current_opcode_val, &code_ptr_validation, validation_end, &vctx, &module->code_bodies[i]));
+            WAH_CHECK_GOTO(wah_validate_opcode(current_opcode_val, &code_ptr_validation, validation_end, &vctx, &module->code_bodies[i]), cleanup);
         }
-        if (vctx.control_sp != 0) return WAH_ERROR_VALIDATION_FAILED; // Unmatched control frames
+        if (vctx.control_sp != 0) {
+            err = WAH_ERROR_VALIDATION_FAILED;
+            goto cleanup;
+        }
         // --- End Validation Pass ---
         
         module->code_bodies[i].max_stack_depth = vctx.max_stack_depth;
 
         // Pre-parse the code for optimized execution
-        WAH_CHECK(wah_preparse_code(module, i, module->code_bodies[i].code, module->code_bodies[i].code_size, &module->code_bodies[i].parsed_code));
+        WAH_CHECK_GOTO(wah_preparse_code(module, i, module->code_bodies[i].code, module->code_bodies[i].code_size, &module->code_bodies[i].parsed_code), cleanup);
 
         *ptr = code_body_end;
     }
-    return WAH_OK;
+    err = WAH_OK; // Ensure err is WAH_OK if everything succeeded
+
+cleanup:
+    if (err != WAH_OK) {
+        if (module->code_bodies) {
+            for (uint32_t i = 0; i < module->code_count; ++i) {
+                free(module->code_bodies[i].local_types);
+                wah_free_parsed_code(&module->code_bodies[i].parsed_code);
+            }
+            free(module->code_bodies);
+            module->code_bodies = NULL;
+        }
+    }
+    return err;
 }
 
 static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
     module->global_count = count;
-    module->globals = (wah_global_t*)malloc(sizeof(wah_global_t) * count);
-    if (!module->globals) return WAH_ERROR_OUT_OF_MEMORY;
+    WAH_MALLOC_ARRAY(module->globals, count);
     memset(module->globals, 0, sizeof(wah_global_t) * count);
 
     for (uint32_t i = 0; i < count; ++i) {
@@ -1778,8 +1865,7 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
     module->memory_count = count;
     if (count > 0) {
-        module->memories = (wah_memory_type_t*)malloc(sizeof(wah_memory_type_t) * count);
-        if (!module->memories) return WAH_ERROR_OUT_OF_MEMORY;
+        WAH_MALLOC_ARRAY(module->memories, count);
         memset(module->memories, 0, sizeof(wah_memory_type_t) * count);
 
         for (uint32_t i = 0; i < count; ++i) {
@@ -1803,8 +1889,7 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
     module->table_count = count;
     if (count > 0) {
-        module->tables = (wah_table_type_t*)malloc(sizeof(wah_table_type_t) * count);
-        if (!module->tables) return WAH_ERROR_OUT_OF_MEMORY;
+        WAH_MALLOC_ARRAY(module->tables, count);
         memset(module->tables, 0, sizeof(wah_table_type_t) * count);
 
         for (uint32_t i = 0; i < count; ++i) {
@@ -1858,8 +1943,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
     module->element_segment_count = count;
     if (count > 0) {
-        module->element_segments = (wah_element_segment_t*)malloc(sizeof(wah_element_segment_t) * count);
-        if (!module->element_segments) return WAH_ERROR_OUT_OF_MEMORY;
+        WAH_MALLOC_ARRAY(module->element_segments, count);
         memset(module->element_segments, 0, sizeof(wah_element_segment_t) * count);
 
         for (uint32_t i = 0; i < count; ++i) {
@@ -1890,8 +1974,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             }
 
             if (segment->num_elems > 0) {
-                segment->func_indices = (uint32_t*)malloc(sizeof(uint32_t) * segment->num_elems);
-                if (!segment->func_indices) return WAH_ERROR_OUT_OF_MEMORY;
+                WAH_MALLOC_ARRAY(segment->func_indices, segment->num_elems);
                 for (uint32_t j = 0; j < segment->num_elems; ++j) {
                     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->func_indices[j]));
                 }
@@ -1937,9 +2020,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
         #define GROW_BLOCK_TARGETS() do { \
                 if (block_target_count >= block_target_capacity) { \
                     block_target_capacity = block_target_capacity == 0 ? 16 : block_target_capacity * 2; \
-                    uint32_t* new_targets = (uint32_t*)realloc(block_targets, sizeof(uint32_t) * block_target_capacity); \
-                    if (!new_targets) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; } \
-                    block_targets = new_targets; \
+                    WAH_REALLOC_ARRAY_GOTO(block_targets, block_target_capacity, cleanup); \
                 } \
             } while (0)
 
@@ -2045,12 +2126,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
     WAH_BOUNDS_CHECK_GOTO(control_sp == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
 
     // --- Allocate and perform Pass 2: Generate preparsed bytecode ---
-    if (preparsed_size > 0) {
-        parsed_code->bytecode = (uint8_t*)malloc(preparsed_size);
-        if (!parsed_code->bytecode) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
-    } else {
-        parsed_code->bytecode = NULL;
-    }
+    WAH_MALLOC_ARRAY_GOTO(parsed_code->bytecode, preparsed_size, cleanup);
     parsed_code->bytecode_size = preparsed_size;
 
     ptr = code; control_sp = 0;
@@ -2309,25 +2385,16 @@ cleanup_parse:
 
 wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module) {
     memset(exec_ctx, 0, sizeof(wah_exec_context_t));
+    wah_error_t err = WAH_OK;
 
     exec_ctx->value_stack_capacity = WAH_DEFAULT_VALUE_STACK_SIZE;
-    exec_ctx->value_stack = (wah_value_t*)malloc(sizeof(wah_value_t) * exec_ctx->value_stack_capacity);
-    if (!exec_ctx->value_stack) return WAH_ERROR_OUT_OF_MEMORY;
+    WAH_MALLOC_ARRAY_GOTO(exec_ctx->value_stack, exec_ctx->value_stack_capacity, cleanup);
 
     exec_ctx->call_stack_capacity = WAH_DEFAULT_MAX_CALL_DEPTH;
-    exec_ctx->call_stack = (wah_call_frame_t*)malloc(sizeof(wah_call_frame_t) * exec_ctx->call_stack_capacity);
-    if (!exec_ctx->call_stack) {
-        free(exec_ctx->value_stack);
-        return WAH_ERROR_OUT_OF_MEMORY;
-    }
+    WAH_MALLOC_ARRAY_GOTO(exec_ctx->call_stack, exec_ctx->call_stack_capacity, cleanup);
 
     if (module->global_count > 0) {
-        exec_ctx->globals = (wah_value_t*)malloc(sizeof(wah_value_t) * module->global_count);
-        if (!exec_ctx->globals) {
-            free(exec_ctx->value_stack);
-            free(exec_ctx->call_stack);
-            return WAH_ERROR_OUT_OF_MEMORY;
-        }
+        WAH_MALLOC_ARRAY_GOTO(exec_ctx->globals, module->global_count, cleanup);
         // Initialize globals from the module definition
         for (uint32_t i = 0; i < module->global_count; ++i) {
             exec_ctx->globals[i] = module->globals[i].initial_value;
@@ -2342,41 +2409,17 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
 
     if (module->memory_count > 0) {
         exec_ctx->memory_size = module->memories[0].min_pages * WAH_WASM_PAGE_SIZE;
-        exec_ctx->memory_base = (uint8_t*)malloc(exec_ctx->memory_size);
-        if (!exec_ctx->memory_base) {
-            free(exec_ctx->value_stack);
-            free(exec_ctx->call_stack);
-            free(exec_ctx->globals);
-            return WAH_ERROR_OUT_OF_MEMORY;
-        }
+        WAH_MALLOC_ARRAY_GOTO(exec_ctx->memory_base, exec_ctx->memory_size, cleanup);
         memset(exec_ctx->memory_base, 0, exec_ctx->memory_size);
     }
 
     if (module->table_count > 0) {
-        exec_ctx->tables = (wah_value_t**)malloc(sizeof(wah_value_t*) * module->table_count);
-        if (!exec_ctx->tables) {
-            free(exec_ctx->value_stack);
-            free(exec_ctx->call_stack);
-            free(exec_ctx->globals);
-            free(exec_ctx->memory_base);
-            return WAH_ERROR_OUT_OF_MEMORY;
-        }
+        WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables, module->table_count, cleanup);
         memset(exec_ctx->tables, 0, sizeof(wah_value_t*) * module->table_count);
 
         for (uint32_t i = 0; i < module->table_count; ++i) {
             uint32_t min_elements = module->tables[i].min_elements;
-            exec_ctx->tables[i] = (wah_value_t*)malloc(sizeof(wah_value_t) * min_elements);
-            if (!exec_ctx->tables[i]) {
-                for (uint32_t j = 0; j < i; ++j) {
-                    free(exec_ctx->tables[j]);
-                }
-                free(exec_ctx->tables);
-                free(exec_ctx->value_stack);
-                free(exec_ctx->call_stack);
-                free(exec_ctx->globals);
-                free(exec_ctx->memory_base);
-                return WAH_ERROR_OUT_OF_MEMORY;
-            }
+            WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables[i], min_elements, cleanup);
             memset(exec_ctx->tables[i], 0, sizeof(wah_value_t) * min_elements); // Initialize to null (0)
         }
         exec_ctx->table_count = module->table_count;
@@ -2396,6 +2439,22 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
     }
 
     return WAH_OK;
+
+cleanup:
+    if (err != WAH_OK) {
+        if (exec_ctx->tables) {
+            for (uint32_t i = 0; i < exec_ctx->table_count; ++i) {
+                free(exec_ctx->tables[i]);
+            }
+            free(exec_ctx->tables);
+        }
+        free(exec_ctx->memory_base);
+        free(exec_ctx->globals);
+        free(exec_ctx->call_stack);
+        free(exec_ctx->value_stack);
+        memset(exec_ctx, 0, sizeof(wah_exec_context_t));
+    }
+    return err;
 }
 
 void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
@@ -2914,19 +2973,13 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 }
 
                 size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
-                uint8_t *new_memory_base = (uint8_t*)realloc(ctx->memory_base, new_memory_size);
-
-                if (new_memory_base == NULL) {
-                    ctx->value_stack[ctx->sp++].i32 = -1; // Realloc failed
-                    break;
-                }
+                WAH_REALLOC_ARRAY_GOTO(ctx->memory_base, new_memory_size, cleanup);
 
                 // Initialize newly allocated memory to zero
                 if (new_memory_size > ctx->memory_size) {
-                    memset(new_memory_base + ctx->memory_size, 0, new_memory_size - ctx->memory_size);
+                    memset(ctx->memory_base + ctx->memory_size, 0, new_memory_size - ctx->memory_size);
                 }
 
-                ctx->memory_base = new_memory_base;
                 ctx->memory_size = (uint32_t)new_memory_size;
                 ctx->value_stack[ctx->sp++].i32 = (int32_t)old_pages;
                 break;
