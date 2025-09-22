@@ -881,6 +881,40 @@ static void test_block_type_with_params_pass() {
     wah_free_module(&module);
 }
 
+// Function: (func (block (result i32) unreachable drop drop br 0))
+// Since unreachable's type can be assumed to be `() -> (i32, i32)`, this should pass the validation.
+static const uint8_t unreachable_drop_br_underflow_fail_wasm[] = {
+    0x00, 0x61, 0x73, 0x6d, // WASM magic
+    0x01, 0x00, 0x00, 0x00, // version
+
+    // Type section
+    0x01, 0x05, 0x01,       // section 1, size 5, 1 type
+    0x60, 0x00, 0x01, 0x7f, // func type: 0 params, 1 result (i32)
+
+    // Function section
+    0x03, 0x02, 0x01, 0x00, // section 3, size 2, 1 func, type 0
+
+    // Code section
+    0x0a, 0x0b, 0x01,       // section 10, size 11, 1 body
+    0x09, 0x00,             // body size 9, 0 locals
+
+    // Function body: block (result i32) i32.const 0 unreachable drop drop br 0
+    0x02, 0x7f,             // block (result i32)
+    0x00,                   // unreachable
+    0x1a,                   // drop
+    0x0d, 0x00,             // br 0
+    0x0b,                   // end block
+    0x0b                    // end function
+};
+
+static void test_unreachable_drop_br_underflow_fail() {
+    printf("Testing unreachable drop and br underflow...\n");
+    wah_module_t module;
+    wah_error_t err = wah_parse_module(unreachable_drop_br_underflow_fail_wasm, sizeof(unreachable_drop_br_underflow_fail_wasm), &module);
+    assert(err == WAH_OK);
+    printf("  - Unreachable drop and br underflow (pass) - Validation passed as expected\n");
+    wah_free_module(&module);
+}
 
 int main() {
     printf("=== Control Flow Tests ===\n");
@@ -893,6 +927,7 @@ int main() {
     test_br_table();
     test_br_table_type_consistency();
     test_block_type_with_params_pass();
+    test_unreachable_drop_br_underflow_fail();
     printf("=== Control Flow Tests Complete ===\n");
     return 0;
 }

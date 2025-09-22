@@ -1002,7 +1002,9 @@ static inline wah_error_t wah_validation_pop_type(wah_validation_context_t *vctx
         // In an unreachable state, pop always succeeds conceptually, and stack height still changes.
         // We still decrement current_stack_depth to track the conceptual stack height.
         // We don't need to pop from type_stack.data as it's already filled with WAH_VAL_TYPE_ANY or ignored.
-        vctx->current_stack_depth--; // Always decrement in unreachable state
+        if (vctx->current_stack_depth > 0) {
+            vctx->current_stack_depth--;
+        }
         return WAH_OK;
     }
 
