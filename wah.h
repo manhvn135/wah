@@ -1672,28 +1672,70 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         }
 
         case WAH_OP_BR_TABLE: {
+            wah_error_t err = WAH_OK; // Declare err here for goto cleanup
             uint32_t num_targets;
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &num_targets));
+            WAH_CHECK_GOTO(wah_decode_uleb128(code_ptr, code_end, &num_targets), cleanup_br_table);
+
+            // Store all label_idx values to process them after decoding all
+            uint32_t* label_indices = NULL;
+            WAH_MALLOC_ARRAY_GOTO(label_indices, num_targets + 1, cleanup_br_table); // +1 for default target
 
             // Decode target table (vector of label_idx)
             for (uint32_t i = 0; i < num_targets; ++i) {
-                uint32_t label_idx;
-                WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
-                WAH_BOUNDS_CHECK(label_idx < vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
+                WAH_CHECK_GOTO(wah_decode_uleb128(code_ptr, code_end, &label_indices[i]), cleanup_br_table);
+                WAH_BOUNDS_CHECK_GOTO(label_indices[i] < vctx->control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
             }
 
             // Decode default target (label_idx)
-            uint32_t default_label_idx;
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &default_label_idx));
-            WAH_BOUNDS_CHECK(default_label_idx < vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
+            WAH_CHECK_GOTO(wah_decode_uleb128(code_ptr, code_end, &label_indices[num_targets]), cleanup_br_table); // Last element is default
+            WAH_BOUNDS_CHECK_GOTO(label_indices[num_targets] < vctx->control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
 
             // Pop index (i32) from stack
             wah_val_type_t index_type;
-            WAH_CHECK(wah_validation_pop_type(vctx, &index_type));
-            WAH_CHECK(wah_validate_type_match(index_type, WAH_VAL_TYPE_I32));
+            WAH_CHECK_GOTO(wah_validation_pop_type(vctx, &index_type), cleanup_br_table);
+            WAH_CHECK_GOTO(wah_validate_type_match(index_type, WAH_VAL_TYPE_I32), cleanup_br_table);
 
-            vctx->is_unreachable = true; // The stack becomes unreachable after br_table
-            return WAH_OK;
+            // Get the block type of the default target as the reference
+            wah_validation_control_frame_t *default_target_frame = &vctx->control_stack[vctx->control_sp - 1 - label_indices[num_targets]];
+            const wah_func_type_t *expected_block_type = &default_target_frame->block_type;
+
+            // Check type consistency for all targets
+            for (uint32_t i = 0; i < num_targets + 1; ++i) {
+                wah_validation_control_frame_t *current_target_frame = &vctx->control_stack[vctx->control_sp - 1 - label_indices[i]];
+                const wah_func_type_t *current_block_type = &current_target_frame->block_type;
+
+                // All target blocks must have the same result count and types
+                if (current_block_type->result_count != expected_block_type->result_count) {
+                    err = WAH_ERROR_VALIDATION_FAILED;
+                    goto cleanup_br_table;
+                }
+                for (uint32_t j = 0; j < expected_block_type->result_count; ++j) {
+                    if (current_block_type->result_types[j] != expected_block_type->result_types[j]) {
+                        err = WAH_ERROR_VALIDATION_FAILED;
+                        goto cleanup_br_table;
+                    }
+                }
+            }
+
+            // Pop the expected result types of the target block from the current stack
+            // The stack must contain these values for the branch to be valid.
+            for (int32_t i = expected_block_type->result_count - 1; i >= 0; --i) {
+                wah_val_type_t actual_type;
+                WAH_CHECK_GOTO(wah_validation_pop_type(vctx, &actual_type), cleanup_br_table);
+                WAH_CHECK_GOTO(wah_validate_type_match(actual_type, expected_block_type->result_types[i]), cleanup_br_table);
+            }
+
+            // Discard any remaining values on the stack above the target frame's stack height
+            while (vctx->current_stack_depth > default_target_frame->stack_height) {
+                wah_val_type_t temp_type;
+                WAH_CHECK_GOTO(wah_validation_pop_type(vctx, &temp_type), cleanup_br_table);
+            }
+
+            vctx->is_unreachable = true; // br_table makes the current path unreachable
+            err = WAH_OK; // Set err to WAH_OK before cleanup
+        cleanup_br_table:
+            free(label_indices);
+            return err;
         }
 
         case WAH_OP_RETURN:

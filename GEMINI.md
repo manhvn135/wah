@@ -34,3 +34,5 @@ All public API functions return a `wah_error_t` enum value. `WAH_OK` indicates s
   - When `WAH_DEBUG` is enabled, `WAH_LOG` allows you to print logs in a `(line number) content` format using `printf`-like syntax.
   - Similarly, `WAH_CHECK` and similar macros will automatically output the failure location and error codes using `WAH_LOG` when `WAH_DEBUG` is active.
   - For debugging logs, it is best to use `WAH_LOG` exclusively due to the aforementioned reasons. In particular do not expand `WAH_CHECK` for logging.
+- Strive to use an existing test file for new test cases. Introduce a new file only when a new major category is warranted.
+- **IMPORTANT:** Any new bug should introduce a failing regression test that still does compile, so that the fix is demonstrated to reliably make it pass. Do not code the fix first!

@@ -608,15 +608,15 @@ static const uint8_t br_table_wasm[] = {
     0x07, 0x11, 0x01, 0x0f, 0x62, 0x72, 0x5f, 0x74, 0x61, 0x62, 0x6c,
     0x65, 0x5f, 0x66, 0x75, 0x6e, 0x63, 0x00, 0x00,
     // Code section
-    0x0a, 0x23, 0x01,
-    0x21, // func body size
+    0x0a, 0x23, 0x01, // section 10, size 35, 1 body
+    0x21, // func body size (33 bytes)
     0x00, // locals
     // main logic
-    0x02, 0x7f, // block $l3 (result i32)
+    0x02, 0x40, // block $l3 (empty result)
       0x02, 0x40, // block $l2
         0x02, 0x40, // block $l1
           0x02, 0x40, // block $l0
-            0x20, 0x00, // local.get 0
+            0x20, 0x00, // local.get 0 (index)
             0x0e, // br_table
             0x03, // 3 targets in vec
             0x00, // target 0 -> $l0
@@ -694,6 +694,134 @@ static void test_br_table() {
     wah_free_module(&module);
 }
 
+// Test for br_table type consistency
+static void test_br_table_type_consistency() {
+    printf("Testing br_table type consistency...\n");
+
+    // Valid case: all targets have the same result type (i32)
+    // (module
+    //  (func (result i32)
+    //   (block (result i32) ;; target 0
+    //    (block (result i32) ;; target 1
+    //     (i32.const 0)
+    //     (br_table 0 1 0) ;; targets 0, 1, default 0
+    //    )
+    //    (i32.const 1)
+    //   )
+    //   (i32.const 2)
+    //  )
+    // )
+    uint8_t wasm_valid[] = {
+        0x00, 0x61, 0x73, 0x6d, // magic
+        0x01, 0x00, 0x00, 0x00, // version
+
+        // Type section
+        0x01, // section id
+        0x05, // section size
+        0x01, // num types
+        0x60, // func type
+        0x00, // num params
+        0x01, // num results
+        0x7f, // i32
+
+        // Function section
+        0x03, // section id
+        0x02, // section size
+        0x01, // num functions
+        0x00, // type index 0
+
+        // Code section
+        0x0a, // section id
+        0x17, // section size (23 bytes)
+        0x01, // num code bodies
+        0x15, // code body size (21 bytes)
+        0x00, // num locals
+
+        // Function body
+        0x02, // block
+        0x7f, // block type (i32)
+        0x02, // block
+        0x7f, // block type (i32)
+        0x41, 0x00, // i32.const 0 (index)
+        0x41, 0x00, // i32.const 0 (value for target block)
+        0x0e, // br_table
+        0x02, // num_targets (2)
+        0x00, // target 0 (label_idx)
+        0x01, // target 1 (label_idx)
+        0x00, // default target 0 (label_idx)
+        0x0b, // end
+        0x41, 0x01, // i32.const 1
+        0x0b, // end
+        0x41, 0x02, // i32.const 2
+        0x0b, // end
+    };
+    wah_module_t module_valid;
+    wah_error_t err_valid = wah_parse_module(wasm_valid, sizeof(wasm_valid), &module_valid);
+    assert(err_valid == WAH_OK);
+    wah_free_module(&module_valid);
+
+    // Invalid case: targets have different result types
+    // (module
+    //  (func (result i32)
+    //   (block (result i32) ;; target 0 (i32)
+    //    (block (result i64) ;; target 1 (i64) -- THIS IS THE DIFFERENCE
+    //     (i32.const 0)
+    //     (br_table 0 1 0) ;; targets 0, 1, default 0
+    //    )
+    //    (i32.const 1)
+    //   )
+    //   (i32.const 2)
+    //  )
+    // )
+    uint8_t wasm_invalid[] = {
+        0x00, 0x61, 0x73, 0x6d, // magic
+        0x01, 0x00, 0x00, 0x00, // version
+
+        // Type section
+        0x01, // section id
+        0x05, // section size
+        0x01, // num types
+        0x60, // func type
+        0x00, // num params
+        0x01, // num results
+        0x7f, // i32
+
+        // Function section
+        0x03, // section id
+        0x02, // section size
+        0x01, // num functions
+        0x00, // type index 0
+
+        // Code section
+        0x0a, // section id
+        0x15, // section size (21 bytes)
+        0x01, // num code bodies
+        0x13, // code body size (19 bytes)
+        0x00, // num locals
+
+        // Function body
+        0x02, // block
+        0x7f, // block type (i32)
+        0x02, // block
+        0x7e, // block type (i64) -- THIS IS THE DIFFERENCE
+        0x41, 0x00, // i32.const 0
+        0x0e, // br_table
+        0x02, // num_targets (2)
+        0x00, // target 0 (label_idx)
+        0x01, // target 1 (label_idx)
+        0x00, // default target 0 (label_idx)
+        0x0b, // end
+        0x41, 0x01, // i32.const 1
+        0x0b, // end
+        0x41, 0x02, // i32.const 2
+        0x0b, // end
+    };
+    wah_module_t module_invalid;
+    wah_error_t err_invalid = wah_parse_module(wasm_invalid, sizeof(wasm_invalid), &module_invalid);
+    assert(err_invalid == WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&module_invalid); // Should still free even if parsing fails
+}
+
 
 int main() {
     printf("=== Control Flow Tests ===\n");
@@ -704,6 +832,7 @@ int main() {
     test_validation_unreachable_br_return();
     test_br_if_validation();
     test_br_table();
+    test_br_table_type_consistency();
     printf("=== Control Flow Tests Complete ===\n");
     return 0;
 }
