@@ -50,7 +50,84 @@ static const uint8_t wasm_binary_invalid_section_order_mem_table[] = {
     0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
 };
 
+int test_invalid_element_segment_func_idx() {
+    printf("Running test_invalid_element_segment_func_idx...\n");
+
+    // Minimal WASM binary with an element section referencing an out-of-bounds function index
+    // (module
+    //   (type $0 (func))
+    //   (func $f0 (type $0) nop)
+    //   (table $0 1 funcref)
+    //   (elem $0 (i32.const 0) $f0 $f1) ;; $f1 does not exist, func_idx 1 is out of bounds
+    // )
+    const uint8_t wasm_binary[] = {
+        0x00, 0x61, 0x73, 0x6D, // Magic
+        0x01, 0x00, 0x00, 0x00, // Version
+
+        // Type Section (id 1)
+        0x01, // Section ID
+        0x04, // Section Size
+        0x01, // Count of types
+        0x60, // Func type
+        0x00, // Param count
+        0x00, // Result count
+
+        // Function Section (id 3)
+        0x03, // Section ID
+        0x02, // Section Size
+        0x01, // Count of functions
+        0x00, // Type index 0 for function 0
+
+        // Table Section (id 4)
+        0x04, // Section ID
+        0x04, // Section Size
+        0x01, // Count of tables
+        0x70, // funcref type
+        0x00, // flags: not resizable
+        0x01, // min elements: 1
+
+        // Element Section (id 9)
+        0x09, // Section ID
+        0x08, // Section Size
+        0x01, // Count of element segments
+        0x00, // Table index 0
+        0x41, // opcode i32.const
+        0x00, // value 0
+        0x0B, // opcode end
+        0x02, // num_elems: 2
+        0x00, // func_idx 0 (valid)
+        0x01, // func_idx 1 (INVALID - only 1 function exists)
+
+        // Code Section (id 10)
+        0x0A, // Section ID
+        0x05, // Section Size
+        0x01, // Count of code bodies
+        0x02, // Code body size for function 0
+        0x00, // Num locals
+        0x01, // Nop opcode
+        0x0B, // End opcode
+    };
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+
+    // Expecting validation failure due to out-of-bounds function index
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "Assertion failed: Expected WAH_ERROR_VALIDATION_FAILED for invalid function index in element segment, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    printf("  - PASSED: Invalid element segment function index correctly failed validation.\n");
+
+    wah_free_module(&module);
+    return 0;
+}
+
 int main(void) {
+    int result = 0;
+
     wah_module_t module;
     wah_error_t err;
 
@@ -71,14 +148,13 @@ int main(void) {
     printf("Testing invalid section order (Memory before Table)...\n");
     err = wah_parse_module(wasm_binary_invalid_section_order_mem_table, sizeof(wasm_binary_invalid_section_order_mem_table), &module);
     assert(err == WAH_ERROR_VALIDATION_FAILED);
-    if (err == WAH_ERROR_VALIDATION_FAILED) {
-        printf("  - PASSED: Module with invalid section order correctly failed validation.\n");
+    result |= test_invalid_element_segment_func_idx();
+
+    if (result == 0) {
+        printf("All parser tests passed!\n");
     } else {
-        printf("  - FAILED: Module with invalid section order did not fail as expected. Error: %s\n", wah_strerror(err));
-        return 1;
+        printf("Parser tests failed!\n");
     }
 
-    printf("--- Parser Correctness Test Finished ---\n");
-
-    return 0;
+    return result;
 }

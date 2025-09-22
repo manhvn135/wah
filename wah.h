@@ -2011,6 +2011,9 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                 WAH_MALLOC_ARRAY(segment->func_indices, segment->num_elems);
                 for (uint32_t j = 0; j < segment->num_elems; ++j) {
                     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->func_indices[j]));
+                    if (segment->func_indices[j] >= module->function_count) {
+                        return WAH_ERROR_VALIDATION_FAILED;
+                    }
                 }
             }
         }
