@@ -61,6 +61,27 @@ static const uint8_t wasm_binary_elem_overflow[] = {
     0x00, 0x00, 0x00, 0x00, 
 };
 
+// --- Test Case 5: Local count overflow in wah_parse_code_section ---
+// This tests if current_local_count += local_type_count overflows uint32_t
+// leading to an incorrect local_count and subsequent allocation failure or
+// out-of-bounds access.
+static const uint8_t wasm_binary_local_count_overflow[] = {
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // Magic + Version
+    // Type Section
+    0x01, 0x04, 0x01, 0x60, 0x00, 0x00,             // Type: () -> ()
+    // Function Section
+    0x03, 0x02, 0x01, 0x00,                         // Func: type 0
+    // Code Section
+    0x0a, 0x0c, 0x01,                               // Code Section ID, size 12, 1 func
+        0x0a,                                       // Code Body 0 size (10 bytes)
+            0x02,                                   // num_local_entries = 2
+            // Entry 1: local_type_count = 0xFFFFFFFF (5 bytes ULEB128)
+            0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x7F,      // i32 type
+            // Entry 2: local_type_count = 1 (1 byte ULEB128)
+            0x01, 0x7F,                             // i32 type
+        0x0B                                        // Function Body: END opcode
+};
+
 int main(void) {
     wah_module_t module;
     wah_error_t err;
@@ -88,10 +109,15 @@ int main(void) {
     if (err == WAH_OK) {
         printf("  - FAILED: Module parsing succeeded unexpectedly!\n");
         wah_free_module(&module);
-        return 1; 
+        return 1;
     } else {
         printf("  - PASSED: Module parsing failed as expected with error: %s\n", wah_strerror(err));
     }
+
+    printf("5. Testing local count overflow...\n");
+    err = wah_parse_module(wasm_binary_local_count_overflow, sizeof(wasm_binary_local_count_overflow), &module);
+    assert(err == WAH_ERROR_TOO_LARGE); // Expecting TOO_LARGE due to overflow check
+    printf("  - PASSED\n");
 
     printf("--- All Overflow Tests Passed ---\n");
 

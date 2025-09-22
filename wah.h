@@ -1787,6 +1787,10 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             uint32_t local_type_count;
             WAH_CHECK_GOTO(wah_decode_uleb128(&ptr_count, code_body_end, &local_type_count), cleanup);
             ptr_count++; // Skip the actual type byte
+            if (UINT32_MAX - current_local_count < local_type_count) {
+                err = WAH_ERROR_TOO_LARGE;
+                goto cleanup;
+            }
             current_local_count += local_type_count;
         }
         module->code_bodies[i].local_count = current_local_count;
