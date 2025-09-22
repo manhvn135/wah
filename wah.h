@@ -462,6 +462,8 @@ typedef struct wah_module_s {
     wah_table_type_t *tables;
     wah_element_segment_t *element_segments;
 
+    uint32_t start_function_idx;
+    bool has_start_function;
     // Add other sections as they are implemented
 } wah_module_t;
 
@@ -2017,7 +2019,12 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
 }
 
 static wah_error_t wah_parse_start_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
-    return wah_parse_unimplemented_section(ptr, section_end, module);
+    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->start_function_idx));
+    if (module->start_function_idx >= module->function_count) {
+        return WAH_ERROR_VALIDATION_FAILED;
+    }
+    module->has_start_function = true;
+    return WAH_OK;
 }
 
 static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
@@ -2502,6 +2509,11 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
                 exec_ctx->tables[segment->table_idx][segment->offset + j].i32 = (int32_t)segment->func_indices[j];
             }
         }
+    }
+
+    // If a start function is defined, call it.
+    if (module->has_start_function) {
+        WAH_CHECK_GOTO(wah_call(exec_ctx, module, module->start_function_idx, NULL, 0, NULL), cleanup);
     }
 
     return WAH_OK;

@@ -6,4 +6,6 @@ wah_test_traps
 wah_test_memory
 wah_test_control_flow
 wah_test_determinism
+wah_test_overflow
+wah_test_functions
 .claude
