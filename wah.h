@@ -779,61 +779,22 @@ static inline double wah_nearest_f64(double d) {
 }
 
 // Helper functions for floating-point to integer truncations with trap handling
-static inline wah_error_t wah_trunc_f32_to_i32(float val, int32_t *result) {
-    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
-    if (val < (float)INT32_MIN || val >= (float)INT32_MAX + 1.0f) return WAH_ERROR_TRAP;
-    *result = (int32_t)truncf(val);
-    return WAH_OK;
+#define DEFINE_TRUNC_F2I(N, fty, T, ity, lo, hi, call) \
+static inline wah_error_t wah_trunc_f##N##_to_##T(fty val, ity *result) { \
+    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP; \
+    if (val < (lo) || val >= (hi)) return WAH_ERROR_TRAP; \
+    *result = (ity)call(val); \
+    return WAH_OK; \
 }
 
-static inline wah_error_t wah_trunc_f32_to_u32(float val, uint32_t *result) {
-    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
-    if (val < 0.0f || val >= (float)UINT32_MAX + 1.0f) return WAH_ERROR_TRAP;
-    *result = (uint32_t)truncf(val);
-    return WAH_OK;
-}
-
-static inline wah_error_t wah_trunc_f64_to_i32(double val, int32_t *result) {
-    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
-    if (val < (double)INT32_MIN || val >= (double)INT32_MAX + 1.0) return WAH_ERROR_TRAP;
-    *result = (int32_t)trunc(val);
-    return WAH_OK;
-}
-
-static inline wah_error_t wah_trunc_f64_to_u32(double val, uint32_t *result) {
-    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
-    if (val < 0.0 || val >= (double)UINT32_MAX + 1.0) return WAH_ERROR_TRAP;
-    *result = (uint32_t)trunc(val);
-    return WAH_OK;
-}
-
-static inline wah_error_t wah_trunc_f32_to_i64(float val, int64_t *result) {
-    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
-    if (val < (float)INT64_MIN || val >= (float)INT64_MAX + 1.0f) return WAH_ERROR_TRAP;
-    *result = (int64_t)truncf(val);
-    return WAH_OK;
-}
-
-static inline wah_error_t wah_trunc_f32_to_u64(float val, uint64_t *result) {
-    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
-    if (val < 0.0f || val >= (float)UINT64_MAX + 1.0f) return WAH_ERROR_TRAP;
-    *result = (uint64_t)truncf(val);
-    return WAH_OK;
-}
-
-static inline wah_error_t wah_trunc_f64_to_i64(double val, int64_t *result) {
-    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
-    if (val < (double)INT64_MIN || val >= (double)INT64_MAX + 1.0) return WAH_ERROR_TRAP;
-    *result = (int64_t)trunc(val);
-    return WAH_OK;
-}
-
-static inline wah_error_t wah_trunc_f64_to_u64(double val, uint64_t *result) {
-    if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP;
-    if (val < 0.0 || val >= (double)UINT64_MAX + 1.0) return WAH_ERROR_TRAP;
-    *result = (uint64_t)trunc(val);
-    return WAH_OK;
-}
+DEFINE_TRUNC_F2I(32, float,  i32,  int32_t,  (float)INT32_MIN,  (float) INT32_MAX + 1.0f, truncf)
+DEFINE_TRUNC_F2I(32, float,  u32, uint32_t,                 0,  (float)UINT32_MAX + 1.0f, truncf)
+DEFINE_TRUNC_F2I(64, double, i32,  int32_t, (double)INT32_MIN, (double) INT32_MAX + 1.0,  trunc)
+DEFINE_TRUNC_F2I(64, double, u32, uint32_t,                 0, (double)UINT32_MAX + 1.0,  trunc)
+DEFINE_TRUNC_F2I(32, float,  i64,  int64_t,  (float)INT64_MIN,  (float) INT64_MAX + 1.0f, truncf)
+DEFINE_TRUNC_F2I(32, float,  u64, uint64_t,                 0,  (float)UINT64_MAX + 1.0f, truncf)
+DEFINE_TRUNC_F2I(64, double, i64,  int64_t, (double)INT64_MIN, (double) INT64_MAX + 1.0,  trunc)
+DEFINE_TRUNC_F2I(64, double, u64, uint64_t,                 0, (double)UINT64_MAX + 1.0,  trunc)
 
 // --- Helper Macros ---
 #define WAH_CHECK(expr) do { \
