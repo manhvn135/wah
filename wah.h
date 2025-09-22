@@ -2428,6 +2428,12 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
         }
     }
 
+    // After all sections are parsed, validate that function_count matches code_count
+    if (module->function_count != module->code_count) {
+        err = WAH_ERROR_VALIDATION_FAILED;
+        goto cleanup_parse;
+    }
+
     return WAH_OK;
 
 cleanup_parse:

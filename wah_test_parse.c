@@ -22,6 +22,34 @@ static const uint8_t wasm_binary_zero_params[] = {
     0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b, // size 2, 0 locals, end
 };
 
+// This WASM module has a function section but no code section.
+// This should result in WAH_ERROR_VALIDATION_FAILED because module->function_count will be > 0
+// but module->code_count will be 0.
+static const uint8_t wasm_binary_func_no_code_section[] = {
+    // Magic + Version
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+
+    // Type Section: 1 type, () -> ()
+    0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+
+    // Function Section: 1 function, type 0
+    0x03, 0x02, 0x01, 0x00,
+};
+
+// This WASM module has a code section but no function section.
+// This should result in WAH_ERROR_VALIDATION_FAILED because module->function_count will be 0
+// but the code section count will be > 0.
+static const uint8_t wasm_binary_code_no_func_section[] = {
+    // Magic + Version
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+
+    // Type Section: 1 type, () -> ()
+    0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+
+    // Code Section: 1 function body (but no function section declared)
+    0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b, // size 2, 0 locals, end
+};
+
 // This WASM module has the Memory Section before the Table Section (invalid order)
 static const uint8_t wasm_binary_invalid_section_order_mem_table[] = {
     // Magic + Version
@@ -125,6 +153,43 @@ int test_invalid_element_segment_func_idx() {
     return 0;
 }
 
+int test_code_section_no_function_section() {
+    printf("Running test_code_section_no_function_section...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    wah_error_t err = wah_parse_module(wasm_binary_code_no_func_section, sizeof(wasm_binary_code_no_func_section), &module);
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "Assertion failed: Expected WAH_ERROR_VALIDATION_FAILED for code section without function section, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    printf("  - PASSED: Code section without function section correctly failed validation.\n");
+    wah_free_module(&module);
+    return 0;
+}
+
+int test_function_section_no_code_section() {
+    printf("Running test_function_section_no_code_section...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    wah_error_t err = wah_parse_module(wasm_binary_func_no_code_section, sizeof(wasm_binary_func_no_code_section), &module);
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "Assertion failed: Expected WAH_ERROR_VALIDATION_FAILED for function section without code section, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    printf("  - PASSED: Function section without code section correctly failed validation.\n");
+
+    wah_free_module(&module);
+    return 0;
+}
+
 int main(void) {
     int result = 0;
 
@@ -149,6 +214,8 @@ int main(void) {
     err = wah_parse_module(wasm_binary_invalid_section_order_mem_table, sizeof(wasm_binary_invalid_section_order_mem_table), &module);
     assert(err == WAH_ERROR_VALIDATION_FAILED);
     result |= test_invalid_element_segment_func_idx();
+    result |= test_code_section_no_function_section();
+    result |= test_function_section_no_code_section();
 
     if (result == 0) {
         printf("All parser tests passed!\n");

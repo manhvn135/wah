@@ -822,6 +822,65 @@ static void test_br_table_type_consistency() {
     wah_free_module(&module_invalid); // Should still free even if parsing fails
 }
 
+// Function: (func (param i32) (result i32) (block (param i32) (result i32) local.get 0 i32.const 1 i32.add end))
+// Type 0: (func (param i32) (result i32)) - for the block and the main function
+static const uint8_t block_type_with_params_pass_wasm[] = {
+    0x00, 0x61, 0x73, 0x6d, // WASM magic
+    0x01, 0x00, 0x00, 0x00, // version
+
+    // Type section (section 1)
+    0x01,                   // section id: type
+    0x06,                   // section size: 6 bytes
+    0x01,                   // 1 type
+    // Type 0: (func (param i32) (result i32))
+    0x60,                   // func type
+    0x01, 0x7f,             // 1 param: i32
+    0x01, 0x7f,             // 1 result: i32
+
+    // Function section (section 3)
+    0x03,                   // section id: function
+    0x02,                   // section size: 2 bytes
+    0x01,                   // 1 function
+    0x00,                   // function 0 uses type 0
+
+    // Code section (section 10)
+    0x0a,                   // section id: code
+    0x0a,                   // section size: 10 bytes total
+    0x01,                   // 1 function body
+
+    // Function body 0
+    0x08,                   // body size: 8 bytes
+    0x00,                   // 0 local declarations
+
+    // Code: block (type 0) (local.get 0 i32.const 1 i32.add) end
+    // The i32 parameter for the block will be taken from the stack before the block.
+    // The function's parameter will be pushed onto the stack before the block.
+    0x20, 0x00,             // local.get 0 (get function's parameter)
+    0x41, 0x01,             // i32.const 1
+    0x6a,                   // i32.add
+    0x0b,                   // end block
+    0x0b                    // end function
+};
+
+static void test_block_type_with_params_pass() {
+    printf("Testing block type with parameters (should pass validation and execute correctly)...\n");
+    wah_module_t module;
+    wah_error_t err = wah_parse_module(block_type_with_params_pass_wasm, sizeof(block_type_with_params_pass_wasm), &module);
+    assert(err == WAH_OK);
+    printf("  - Block type with parameters parsed successfully\n");
+    wah_exec_context_t ctx;
+    err = wah_exec_context_create(&ctx, &module);
+    assert(err == WAH_OK);
+    wah_value_t params[1] = {{.i32 = 10}};
+    wah_value_t result;
+    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    assert(err == WAH_OK);
+    assert(result.i32 == 11);
+    printf("  - Block type with parameters executed, result: %d\n", result.i32);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 
 int main() {
     printf("=== Control Flow Tests ===\n");
@@ -833,6 +892,7 @@ int main() {
     test_br_if_validation();
     test_br_table();
     test_br_table_type_consistency();
+    test_block_type_with_params_pass();
     printf("=== Control Flow Tests Complete ===\n");
     return 0;
 }
