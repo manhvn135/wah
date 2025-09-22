@@ -24,7 +24,7 @@ All public API functions return a `wah_error_t` enum value. `WAH_OK` indicates s
 - It uses standard C libraries (`stdint.h`, `stddef.h`, `stdbool.h`, `string.h`, `stdlib.h`, `assert.h`, `math.h`, `stdio.h`).
 - Platform-specific intrinsics (`__builtin_popcount`, `_BitScanReverse`, etc.) are used for performance where available, with generic fallbacks.
 - **Manual WASM Binary Creation:** When manually crafting WASM binaries (without tools like `wat2wasm`), extreme care must be taken with section size calculations. Always double-check that the initial size numbers are correct. During testing, explicitly verify that the result code is *not* `WAH_ERROR_UNEXPECTED_EOF` to catch early errors related to incorrect section sizing.
-- **Numeric Overflow Checks:** During arithmetic operations (e.g., addition, multiplication), it is crucial to explicitly check for potential numeric overflows. If an overflow occurs, it must be reported using the `WAH_ERROR_TOO_LARGE` error code to indicate that the result exceeds the representable range.
+- **Numeric Overflow Checks:** During arithmetic operations inside parsing (e.g., addition, multiplication), it is crucial to explicitly check for potential numeric overflows. If an overflow occurs, it must be reported using the `WAH_ERROR_TOO_LARGE` error code to indicate that the result exceeds the representable range. Note that this doesn't apply to runtime numeric operations which assume 2's complements.
 
 ### Testing
 

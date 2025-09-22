@@ -508,8 +508,28 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
 static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
 static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
 static wah_error_t wah_parse_datacount_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+static wah_error_t wah_parse_custom_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
 
-// --- Interpreter Functions ---
+// Global array of section handlers, indexed by wah_section_id_t
+static const struct wah_section_handler_s {
+    int8_t order; // Expected order of the section (0 for custom, 1 for Type, etc.)
+    wah_error_t (*parser_func)(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+} wah_section_handlers[] = {
+    [WAH_SECTION_CUSTOM]    = { .order = 0,  .parser_func = wah_parse_custom_section },
+    [WAH_SECTION_TYPE]      = { .order = 1,  .parser_func = wah_parse_type_section },
+    [WAH_SECTION_IMPORT]    = { .order = 2,  .parser_func = wah_parse_import_section },
+    [WAH_SECTION_FUNCTION]  = { .order = 3,  .parser_func = wah_parse_function_section },
+    [WAH_SECTION_TABLE]     = { .order = 4,  .parser_func = wah_parse_table_section },
+    [WAH_SECTION_MEMORY]    = { .order = 5,  .parser_func = wah_parse_memory_section },
+    [WAH_SECTION_GLOBAL]    = { .order = 6,  .parser_func = wah_parse_global_section },
+    [WAH_SECTION_EXPORT]    = { .order = 7,  .parser_func = wah_parse_export_section },
+    [WAH_SECTION_START]     = { .order = 8,  .parser_func = wah_parse_start_section },
+    [WAH_SECTION_ELEMENT]   = { .order = 9,  .parser_func = wah_parse_element_section },
+    [WAH_SECTION_DATACOUNT] = { .order = 10, .parser_func = wah_parse_datacount_section },
+    [WAH_SECTION_CODE]      = { .order = 11, .parser_func = wah_parse_code_section },
+    [WAH_SECTION_DATA]      = { .order = 12, .parser_func = wah_parse_data_section },
+};
+
 // Creates and initializes an execution context.
 wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module);
 
@@ -2300,6 +2320,9 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
     const uint8_t *ptr = wasm_binary;
     const uint8_t *end = wasm_binary + binary_size;
 
+    // For section order validation
+    int8_t last_parsed_order = 0; // Start with 0, as Type section is 1. Custom sections are 0 in map.
+
     // 1. Check Magic Number
     uint32_t magic = wah_read_u32_le(ptr);
     ptr += 4;
@@ -2323,58 +2346,30 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
         uint32_t section_size;
         WAH_CHECK_GOTO(wah_read_section_header(&ptr, end, &section_id, &section_size), cleanup_parse);
 
-        const uint8_t *section_payload_end = ptr + section_size;
+        // Get section handler from lookup table
+        if (section_id >= sizeof(wah_section_handlers) / sizeof(*wah_section_handlers)) {
+            err = WAH_ERROR_UNKNOWN_SECTION; // Unknown section ID
+            goto cleanup_parse;
+        }
+        const struct wah_section_handler_s *handler = &wah_section_handlers[section_id];
 
+        // Section order validation
+        if (section_id != WAH_SECTION_CUSTOM) { // Custom sections do not affect the order
+            if (handler->order < last_parsed_order) {
+                err = WAH_ERROR_VALIDATION_FAILED; // Invalid section order
+                goto cleanup_parse;
+            }
+            last_parsed_order = handler->order;
+        }
+
+        const uint8_t *section_payload_end = ptr + section_size;
         if (section_payload_end > end) {
             err = WAH_ERROR_UNEXPECTED_EOF;
             goto cleanup_parse;
         }
 
         WAH_LOG("Parsing section ID: %d, size: %u", section_id, section_size);
-        switch (section_id) {
-            case WAH_SECTION_CUSTOM:
-                WAH_CHECK_GOTO(wah_parse_custom_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_TYPE:
-                WAH_CHECK_GOTO(wah_parse_type_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_IMPORT:
-                WAH_CHECK_GOTO(wah_parse_import_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_FUNCTION:
-                WAH_CHECK_GOTO(wah_parse_function_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_TABLE:
-                WAH_CHECK_GOTO(wah_parse_table_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_MEMORY:
-                WAH_CHECK_GOTO(wah_parse_memory_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_GLOBAL:
-                WAH_CHECK_GOTO(wah_parse_global_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_EXPORT:
-                WAH_CHECK_GOTO(wah_parse_export_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_START:
-                WAH_CHECK_GOTO(wah_parse_start_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_ELEMENT:
-                WAH_CHECK_GOTO(wah_parse_element_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_CODE:
-                WAH_CHECK_GOTO(wah_parse_code_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_DATA:
-                WAH_CHECK_GOTO(wah_parse_data_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            case WAH_SECTION_DATACOUNT:
-                WAH_CHECK_GOTO(wah_parse_datacount_section(&ptr, section_payload_end, module), cleanup_parse);
-                break;
-            default:
-                // Unknown section ID
-                return WAH_ERROR_UNKNOWN_SECTION;
-        }
+        WAH_CHECK_GOTO(handler->parser_func(&ptr, section_payload_end, module), cleanup_parse);
 
         // Ensure we consumed exactly the section_size bytes
         if (ptr != section_payload_end) {
