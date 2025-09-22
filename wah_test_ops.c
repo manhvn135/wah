@@ -80,7 +80,7 @@ const uint8_t and_test_wasm[] = {
     0x01, 0x00, 0x00, 0x00, // version
     // Type section
     0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
-    // Function section  
+    // Function section
     0x03, 0x02, 0x01, 0x00,
     // Code section
     0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x71, 0x0b
@@ -93,7 +93,7 @@ int test_i32_and() {
     printf("\n=== Testing I32.AND ===\n");
     params[0].i32 = 0xFF; params[1].i32 = 0x0F;
     failures += run_test_i32("I32.AND (0xFF & 0x0F)", and_test_wasm, params, 0x0F, false);
-    
+
     return failures;
 }
 
@@ -105,7 +105,7 @@ const uint8_t eq_test_wasm[] = {
     0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
     // Function section
     0x03, 0x02, 0x01, 0x00,
-    // Code section  
+    // Code section
     0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x46, 0x0b
 };
 
@@ -116,7 +116,7 @@ int test_i32_eq() {
     printf("\n=== Testing I32.EQ ===\n");
     params[0].i32 = 42; params[1].i32 = 42;
     failures += run_test_i32("I32.EQ (42 == 42)", eq_test_wasm, params, 1, false);
-    
+
     params[0].i32 = 42; params[1].i32 = 24;
     failures += run_test_i32("I32.EQ (42 == 24)", eq_test_wasm, params, 0, false);
 

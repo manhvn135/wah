@@ -21,13 +21,12 @@ typedef enum {
     WAH_ERROR_INVALID_VERSION,
     WAH_ERROR_UNEXPECTED_EOF,
     WAH_ERROR_UNKNOWN_SECTION,
-    WAH_ERROR_TOO_LARGE, // exceeding implementation limits (including numeric overflow)
+    WAH_ERROR_TOO_LARGE,
     WAH_ERROR_OUT_OF_MEMORY,
     WAH_ERROR_VALIDATION_FAILED,
-    WAH_ERROR_TRAP,  // Runtime trap (division by zero, integer overflow, etc.)
+    WAH_ERROR_TRAP,
     WAH_ERROR_CALL_STACK_OVERFLOW,
-    WAH_ERROR_MEMORY_OUT_OF_BOUNDS, // Memory access out of bounds
-    // Add more specific error codes as needed
+    WAH_ERROR_MEMORY_OUT_OF_BOUNDS,
 } wah_error_t;
 
 // Convert error code to human-readable string
@@ -36,10 +35,7 @@ const char *wah_strerror(wah_error_t err);
 // --- Memory Structure ---
 #define WAH_WASM_PAGE_SIZE 65536 // 64 KB
 
-typedef struct {
-    uint32_t min_pages;
-    uint32_t max_pages; // For future extension, currently ignored for fixed size
-} wah_memory_type_t;
+typedef struct { uint32_t min_pages, max_pages; } wah_memory_type_t;
 
 // --- LEB128 Decoding ---
 // Helper function to decode an unsigned LEB128 integer
@@ -218,7 +214,6 @@ static inline void wah_write_f64_le(uint8_t *ptr, double val) {
     wah_write_u64_le(ptr, u.i);
 }
 
-
 // --- WebAssembly Types ---
 typedef enum {
     WAH_VAL_TYPE_I32 = 0x7F,
@@ -392,23 +387,6 @@ typedef struct wah_exec_context_s {
     uint32_t table_count;
 } wah_exec_context_t;
 
-// --- Section IDs ---
-typedef enum {
-    WAH_SECTION_CUSTOM = 0,
-    WAH_SECTION_TYPE = 1,
-    WAH_SECTION_IMPORT = 2,
-    WAH_SECTION_FUNCTION = 3,
-    WAH_SECTION_TABLE = 4,
-    WAH_SECTION_MEMORY = 5,
-    WAH_SECTION_GLOBAL = 6,
-    WAH_SECTION_EXPORT = 7,
-    WAH_SECTION_START = 8,
-    WAH_SECTION_ELEMENT = 9,
-    WAH_SECTION_CODE = 10,
-    WAH_SECTION_DATA = 11,
-    WAH_SECTION_DATACOUNT = 12,
-} wah_section_id_t;
-
 // --- Function Type ---
 typedef struct {
     uint32_t param_count;
@@ -482,7 +460,7 @@ typedef struct {
     uint32_t current_stack_depth; // Current stack depth during validation
     uint32_t max_stack_depth; // Maximum stack depth seen during validation
     bool is_unreachable; // True if the current code path is unreachable
-    
+
     // Control flow validation stack
     wah_validation_control_frame_t control_stack[WAH_MAX_CONTROL_DEPTH];
     uint32_t control_sp;
@@ -508,24 +486,24 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
 static wah_error_t wah_parse_datacount_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
 static wah_error_t wah_parse_custom_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
 
-// Global array of section handlers, indexed by wah_section_id_t
+// Global array of section handlers, indexed by the section ID
 static const struct wah_section_handler_s {
     int8_t order; // Expected order of the section (0 for custom, 1 for Type, etc.)
     wah_error_t (*parser_func)(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
 } wah_section_handlers[] = {
-    [WAH_SECTION_CUSTOM]    = { .order = 0,  .parser_func = wah_parse_custom_section },
-    [WAH_SECTION_TYPE]      = { .order = 1,  .parser_func = wah_parse_type_section },
-    [WAH_SECTION_IMPORT]    = { .order = 2,  .parser_func = wah_parse_import_section },
-    [WAH_SECTION_FUNCTION]  = { .order = 3,  .parser_func = wah_parse_function_section },
-    [WAH_SECTION_TABLE]     = { .order = 4,  .parser_func = wah_parse_table_section },
-    [WAH_SECTION_MEMORY]    = { .order = 5,  .parser_func = wah_parse_memory_section },
-    [WAH_SECTION_GLOBAL]    = { .order = 6,  .parser_func = wah_parse_global_section },
-    [WAH_SECTION_EXPORT]    = { .order = 7,  .parser_func = wah_parse_export_section },
-    [WAH_SECTION_START]     = { .order = 8,  .parser_func = wah_parse_start_section },
-    [WAH_SECTION_ELEMENT]   = { .order = 9,  .parser_func = wah_parse_element_section },
-    [WAH_SECTION_DATACOUNT] = { .order = 10, .parser_func = wah_parse_datacount_section },
-    [WAH_SECTION_CODE]      = { .order = 11, .parser_func = wah_parse_code_section },
-    [WAH_SECTION_DATA]      = { .order = 12, .parser_func = wah_parse_data_section },
+    [0]  = { .order = 0,  .parser_func = wah_parse_custom_section },
+    [1]  = { .order = 1,  .parser_func = wah_parse_type_section },
+    [2]  = { .order = 2,  .parser_func = wah_parse_import_section },
+    [3]  = { .order = 3,  .parser_func = wah_parse_function_section },
+    [4]  = { .order = 4,  .parser_func = wah_parse_table_section },
+    [5]  = { .order = 5,  .parser_func = wah_parse_memory_section },
+    [6]  = { .order = 6,  .parser_func = wah_parse_global_section },
+    [7]  = { .order = 7,  .parser_func = wah_parse_export_section },
+    [8]  = { .order = 8,  .parser_func = wah_parse_start_section },
+    [9]  = { .order = 9,  .parser_func = wah_parse_element_section },
+    [12] = { .order = 10, .parser_func = wah_parse_datacount_section },
+    [10] = { .order = 11, .parser_func = wah_parse_code_section },
+    [11] = { .order = 12, .parser_func = wah_parse_data_section },
 };
 
 // Creates and initializes an execution context.
@@ -1012,9 +990,9 @@ static inline wah_error_t wah_validate_type_match(wah_val_type_t actual, wah_val
 }
 
 // Helper to read a section header
-static wah_error_t wah_read_section_header(const uint8_t **ptr, const uint8_t *end, wah_section_id_t *id, uint32_t *size) {
+static wah_error_t wah_read_section_header(const uint8_t **ptr, const uint8_t *end, uint8_t *id, uint32_t *size) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
-    *id = (wah_section_id_t)*(*ptr)++;
+    *id = *(*ptr)++;
     return wah_decode_uleb128(ptr, end, size);
 }
 
@@ -1022,7 +1000,7 @@ static wah_error_t wah_read_section_header(const uint8_t **ptr, const uint8_t *e
 static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
-    
+
     module->type_count = count;
     WAH_MALLOC_ARRAY(module->types, count);
     memset(module->types, 0, sizeof(wah_func_type_t) * count);
@@ -1034,7 +1012,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         // Parse parameter types
         uint32_t param_count_type;
         WAH_CHECK(wah_decode_uleb128(ptr, section_end, &param_count_type));
-        
+
         module->types[i].param_count = param_count_type;
         WAH_MALLOC_ARRAY(module->types[i].param_types, param_count_type);
         for (uint32_t j = 0; j < param_count_type; ++j) {
@@ -1050,10 +1028,10 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         uint32_t result_count_type;
         WAH_CHECK(wah_decode_uleb128(ptr, section_end, &result_count_type));
         WAH_ENSURE(result_count_type <= 1, WAH_ERROR_VALIDATION_FAILED);
-        
+
         module->types[i].result_count = result_count_type;
         WAH_MALLOC_ARRAY(module->types[i].result_types, result_count_type);
-        
+
         for (uint32_t j = 0; j < result_count_type; ++j) {
             WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
             wah_val_type_t type = (wah_val_type_t)**ptr;
@@ -1069,7 +1047,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
 static wah_error_t wah_parse_function_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
-    
+
     module->function_count = count;
     WAH_MALLOC_ARRAY(module->function_type_indices, count);
 
@@ -1213,16 +1191,16 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_LOCAL_TEE: {
             uint32_t local_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &local_idx));
-            
+
             WAH_ENSURE(local_idx < vctx->total_locals, WAH_ERROR_VALIDATION_FAILED);
-            
+
             wah_val_type_t expected_type;
             if (local_idx < vctx->func_type->param_count) {
                 expected_type = vctx->func_type->param_types[local_idx];
             } else {
                 expected_type = code_body->local_types[local_idx - vctx->func_type->param_count];
             }
-            
+
             if (opcode_val == WAH_OP_LOCAL_GET) {
                 return wah_validation_push_type(vctx, expected_type);
             } else if (opcode_val == WAH_OP_LOCAL_SET) {
@@ -1257,7 +1235,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_validate_type_match(popped_type, global_type));
             return WAH_OK;
         }
-        
+
         case WAH_OP_I32_CONST: {
             int32_t val;
             WAH_CHECK(wah_decode_sleb128_32(code_ptr, code_end, &val));
@@ -1403,7 +1381,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_val_type_t type;
             return wah_validation_pop_type(vctx, &type);
         }
-        
+
         case WAH_OP_SELECT: {
             wah_val_type_t c_type, b_type, a_type;
             WAH_CHECK(wah_validation_pop_type(vctx, &c_type));
@@ -1419,14 +1397,14 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 return wah_validation_push_type(vctx, a_type);
             }
         }
-        
+
         // Control flow operations
         case WAH_OP_NOP:
             return WAH_OK;
         case WAH_OP_UNREACHABLE:
             vctx->is_unreachable = true;
             return WAH_OK;
-        
+
         case WAH_OP_BLOCK:
         case WAH_OP_LOOP:
         case WAH_OP_IF: {
@@ -1445,7 +1423,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             frame->else_found = false;
             frame->is_unreachable = vctx->is_unreachable; // Initialize with current reachability
             frame->stack_height = vctx->current_stack_depth; // Store current stack height
-            
+
             wah_func_type_t* bt = &frame->block_type;
             memset(bt, 0, sizeof(wah_func_type_t));
 
@@ -1459,7 +1437,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                     case -0x40: break; // empty
                     default: return WAH_ERROR_VALIDATION_FAILED;
                 }
-                
+
                 if (result_type != WAH_VAL_TYPE_BLOCK_TYPE) {
                     bt->result_count = 1;
                     WAH_MALLOC_ARRAY(bt->result_types, 1);
@@ -1469,13 +1447,13 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 uint32_t type_idx = (uint32_t)block_type_val;
                 WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
                 const wah_func_type_t* referenced_type = &vctx->module->types[type_idx];
-                
+
                 bt->param_count = referenced_type->param_count;
                 if (bt->param_count > 0) {
                     WAH_MALLOC_ARRAY(bt->param_types, bt->param_count);
                     memcpy(bt->param_types, referenced_type->param_types, sizeof(wah_val_type_t) * bt->param_count);
                 }
-                
+
                 bt->result_count = referenced_type->result_count;
                 if (bt->result_count > 0) {
                     WAH_MALLOC_ARRAY(bt->result_types, bt->result_count);
@@ -1489,7 +1467,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_CHECK(wah_validation_pop_type(vctx, &param_type));
                 WAH_CHECK(wah_validate_type_match(param_type, bt->param_types[i]));
             }
-            
+
             frame->type_stack_sp = vctx->type_stack.sp;
             return WAH_OK;
         }
@@ -1506,7 +1484,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 // If the stack was unreachable, any type is fine. Otherwise, it must match.
                 WAH_CHECK(wah_validate_type_match(result_type, frame->block_type.result_types[i]));
             }
-            
+
             // Reset stack to the state before the 'if' block
             vctx->type_stack.sp = frame->type_stack_sp;
             vctx->current_stack_depth = frame->type_stack_sp;
@@ -1532,16 +1510,16 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 vctx->is_unreachable = false;
                 return WAH_OK;
             }
-            
+
             wah_validation_control_frame_t* frame = &vctx->control_stack[vctx->control_sp - 1];
-            
+
             // Pop results from the executed branch and verify
             for (int32_t i = frame->block_type.result_count - 1; i >= 0; --i) {
                 wah_val_type_t result_type;
                 WAH_CHECK(wah_validation_pop_type(vctx, &result_type));
                 WAH_CHECK(wah_validate_type_match(result_type, frame->block_type.result_types[i]));
             }
-            
+
             // Reset stack to the state before the block
             vctx->type_stack.sp = frame->type_stack_sp;
             vctx->current_stack_depth = frame->type_stack_sp;
@@ -1550,7 +1528,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             for (uint32_t i = 0; i < frame->block_type.result_count; ++i) {
                 WAH_CHECK(wah_validation_push_type(vctx, frame->block_type.result_types[i]));
             }
-            
+
             // Free memory allocated for the block type in the control frame
             free(frame->block_type.param_types);
             free(frame->block_type.result_types);
@@ -1750,7 +1728,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
         // --- Validation Pass for Code Body ---
         const wah_func_type_t *func_type = &module->types[module->function_type_indices[i]];
-        
+
         memset(&vctx, 0, sizeof(wah_validation_context_t));
         vctx.is_unreachable = false; // Functions start in a reachable state
         vctx.module = module;
@@ -1763,7 +1741,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         while (code_ptr_validation < validation_end) {
             uint16_t current_opcode_val;
             WAH_CHECK_GOTO(wah_decode_opcode(&code_ptr_validation, validation_end, &current_opcode_val), cleanup);
-            
+
             if (current_opcode_val == WAH_OP_END) {
                  if (vctx.control_sp == 0) { // End of function
                     if (vctx.func_type->result_count == 0) {
@@ -1782,7 +1760,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         }
         WAH_ENSURE_GOTO(vctx.control_sp == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
         // --- End Validation Pass ---
-        
+
         module->code_bodies[i].max_stack_depth = vctx.max_stack_depth;
 
         // Pre-parse the code for optimized execution
@@ -1864,7 +1842,7 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
             }
             default: {
                 // Only const expressions supported for global initializers for now
-                return WAH_ERROR_VALIDATION_FAILED; 
+                return WAH_ERROR_VALIDATION_FAILED;
             }
         }
         WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
@@ -1886,7 +1864,7 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
             uint8_t flags = *(*ptr)++; // Flags for memory type (0x00 for fixed, 0x01 for resizable)
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->memories[i].min_pages));
-            
+
             if (flags & 0x01) { // If resizable, read max_pages
                 WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->memories[i].max_pages));
             } else {
@@ -2315,7 +2293,7 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
 
     // 3. Parse Sections
     while (ptr < end) {
-        wah_section_id_t section_id;
+        uint8_t section_id;
         uint32_t section_size;
         WAH_CHECK_GOTO(wah_read_section_header(&ptr, end, &section_id, &section_size), cleanup_parse);
 
@@ -2324,7 +2302,7 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
         const struct wah_section_handler_s *handler = &wah_section_handlers[section_id];
 
         // Section order validation
-        if (section_id != WAH_SECTION_CUSTOM) { // Custom sections do not affect the order
+        if (section_id != 0) { // Custom sections do not affect the order
             WAH_ENSURE_GOTO(handler->order > last_parsed_order, WAH_ERROR_VALIDATION_FAILED, cleanup_parse);
             last_parsed_order = handler->order;
         }
@@ -2395,7 +2373,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         // Initialize tables with element segments
         for (uint32_t i = 0; i < module->element_segment_count; ++i) {
             const wah_element_segment_t *segment = &module->element_segments[i];
-            
+
             // Validation should be done at parse time. Assert here as a safety net.
             assert(segment->table_idx < exec_ctx->table_count);
             assert((uint64_t)segment->offset + segment->num_elems <= module->tables[segment->table_idx].min_elements);
@@ -2577,7 +2555,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 const wah_code_body_t *called_code = &ctx->module->code_bodies[called_func_idx];
 
                 uint32_t new_locals_offset = ctx->sp - called_func_type->param_count;
-                
+
                 frame->bytecode_ip = bytecode_ip;
 
                 WAH_CHECK(wah_push_frame(ctx, called_func_idx, new_locals_offset));
@@ -2932,10 +2910,10 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 ctx->value_stack[ctx->sp++] = c.i32 ? a : b;
                 break;
             }
-            
+
             case WAH_OP_NOP: break;
             case WAH_OP_UNREACHABLE: err = WAH_ERROR_TRAP; goto cleanup;
-            
+
             default:
                 err = WAH_ERROR_UNKNOWN_SECTION;
                 goto cleanup;
@@ -2966,7 +2944,7 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, u
 
     // Push the first frame. Locals offset is the current stack pointer before parameters.
     WAH_CHECK(wah_push_frame(exec_ctx, func_idx, exec_ctx->sp - func_type->param_count));
-    
+
     // Reserve space for the function's own locals and initialize them to zero
     uint32_t num_locals = exec_ctx->call_stack[0].code->local_count;
     if (num_locals > 0) {

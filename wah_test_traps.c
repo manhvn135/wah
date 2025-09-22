@@ -9,7 +9,7 @@ const uint8_t div_by_zero_wasm[] = {
     0x01, 0x00, 0x00, 0x00, // version
     // Type section
     0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
-    // Function section  
+    // Function section
     0x03, 0x02, 0x01, 0x00,
     // Code section - i32.div_s opcode is 0x6D
     0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6d, 0x0b
@@ -22,7 +22,7 @@ const uint8_t signed_overflow_wasm[] = {
     0x01, 0x00, 0x00, 0x00, // version
     // Type section
     0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
-    // Function section  
+    // Function section
     0x03, 0x02, 0x01, 0x00,
     // Code section - i32.div_s opcode is 0x6D
     0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6d, 0x0b
@@ -34,7 +34,7 @@ const uint8_t div_u_by_zero_wasm[] = {
     0x01, 0x00, 0x00, 0x00, // version
     // Type section
     0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
-    // Function section  
+    // Function section
     0x03, 0x02, 0x01, 0x00,
     // Code section - i32.div_u opcode is 0x6E
     0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6e, 0x0b
@@ -46,7 +46,7 @@ const uint8_t rem_by_zero_wasm[] = {
     0x01, 0x00, 0x00, 0x00, // version
     // Type section
     0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
-    // Function section  
+    // Function section
     0x03, 0x02, 0x01, 0x00,
     // Code section - i32.rem_s opcode is 0x6F
     0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6f, 0x0b
@@ -74,8 +74,8 @@ int main() {
         wah_free_module(&module);
         return 1;
     }
-    
-    params[0].i32 = 42; 
+
+    params[0].i32 = 42;
     params[1].i32 = 0; // Division by zero
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
@@ -103,8 +103,8 @@ int main() {
         wah_free_module(&module);
         return 1;
     }
-    
-    params[0].i32 = INT32_MIN; 
+
+    params[0].i32 = INT32_MIN;
     params[1].i32 = -1; // This causes overflow: INT_MIN / -1 = +2^31 (unrepresentable)
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
@@ -132,8 +132,8 @@ int main() {
         wah_free_module(&module);
         return 1;
     }
-    
-    params[0].i32 = 100; 
+
+    params[0].i32 = 100;
     params[1].i32 = 0; // Division by zero
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
@@ -161,8 +161,8 @@ int main() {
         wah_free_module(&module);
         return 1;
     }
-    
-    params[0].i32 = 7; 
+
+    params[0].i32 = 7;
     params[1].i32 = 0; // Division by zero
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
@@ -190,8 +190,8 @@ int main() {
         wah_free_module(&module);
         return 1;
     }
-    
-    params[0].i32 = 20; 
+
+    params[0].i32 = 20;
     params[1].i32 = 4; // Valid division: 20 / 4 = 5
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_OK) {
@@ -219,8 +219,8 @@ int main() {
         wah_free_module(&module);
         return 1;
     }
-    
-    params[0].i32 = INT32_MIN; 
+
+    params[0].i32 = INT32_MIN;
     params[1].i32 = -1; // This should return 0, not trap
     err = wah_call(&ctx, &module, 0, params, 2, &result);
     if (err == WAH_OK && result.i32 == 0) {
