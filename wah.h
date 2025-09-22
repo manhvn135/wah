@@ -1176,6 +1176,31 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
             break;
         }
+
+        case WAH_OP_GLOBAL_GET: {
+            uint32_t global_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &global_idx));
+            if (global_idx >= vctx->module->global_count) {
+                return WAH_ERROR_VALIDATION_FAILED;
+            }
+            wah_val_type_t global_type = vctx->module->globals[global_idx].type;
+            return wah_validation_push_type(vctx, global_type);
+        }
+        case WAH_OP_GLOBAL_SET: {
+            uint32_t global_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &global_idx));
+            if (global_idx >= vctx->module->global_count) {
+                return WAH_ERROR_VALIDATION_FAILED;
+            }
+            if (!vctx->module->globals[global_idx].is_mutable) {
+                return WAH_ERROR_VALIDATION_FAILED; // Cannot set immutable global
+            }
+            wah_val_type_t global_type = vctx->module->globals[global_idx].type;
+            wah_val_type_t popped_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &popped_type));
+            WAH_CHECK(wah_validate_type_match(popped_type, global_type));
+            return WAH_OK;
+        }
         
         case WAH_OP_I32_CONST: {
             int32_t val;
@@ -2530,13 +2555,13 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             case WAH_OP_GLOBAL_GET: {
                 uint32_t global_idx = wah_read_u32_le(bytecode_ip);
                 bytecode_ip += sizeof(uint32_t);
-                ctx->value_stack[ctx->sp++].i32 = ctx->globals[global_idx].i32;
+                ctx->value_stack[ctx->sp++] = ctx->globals[global_idx];
                 break;
             }
             case WAH_OP_GLOBAL_SET: {
                 uint32_t global_idx = wah_read_u32_le(bytecode_ip);
                 bytecode_ip += sizeof(uint32_t);
-                ctx->globals[global_idx].i32 = ctx->value_stack[--ctx->sp].i32;
+                ctx->globals[global_idx] = ctx->value_stack[--ctx->sp];
                 break;
             }
             case WAH_OP_CALL: {
