@@ -7,14 +7,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#ifdef WAH_DEBUG
-#include <stdio.h>
-#define WAH_LOG(fmt, ...) printf("(%d) " fmt "\n", __LINE__, ##__VA_ARGS__)
-#else
-#define WAH_LOG(fmt, ...) (void)(0)
-#endif
-
-// --- Error Codes ---
 typedef enum {
     WAH_OK = 0,
     WAH_ERROR_INVALID_MAGIC_NUMBER,
@@ -29,13 +21,401 @@ typedef enum {
     WAH_ERROR_MEMORY_OUT_OF_BOUNDS,
 } wah_error_t;
 
+typedef union {
+    int32_t i32;
+    int64_t i64;
+    float f32;
+    double f64;
+} wah_value_t;
+
+typedef struct wah_module_s {
+    uint32_t type_count;
+    uint32_t function_count;
+    uint32_t code_count;
+    uint32_t global_count;
+    uint32_t memory_count;
+    uint32_t table_count;
+    uint32_t element_segment_count;
+
+    struct wah_func_type_s *types;
+    uint32_t *function_type_indices; // Index into the types array
+    struct wah_code_body_s *code_bodies;
+    struct wah_global_s *globals;
+    struct wah_memory_type_s *memories;
+    struct wah_table_type_s *tables;
+    struct wah_element_segment_s *element_segments;
+
+    uint32_t start_function_idx;
+    bool has_start_function;
+} wah_module_t;
+
+typedef struct wah_exec_context_s {
+    wah_value_t *value_stack;       // A single, large stack for operands and locals
+    uint32_t sp;                    // Stack pointer for the value_stack (points to next free slot)
+    uint32_t value_stack_capacity;
+
+    struct wah_call_frame_s *call_stack; // The call frame stack
+    uint32_t call_depth;            // Current call depth (top of the call_stack)
+    uint32_t call_stack_capacity;
+
+    uint32_t max_call_depth;        // Configurable max call depth
+
+    wah_value_t *globals;           // Mutable global values
+    uint32_t global_count;
+
+    const struct wah_module_s *module;
+
+    // Memory
+    uint8_t *memory_base; // Pointer to the allocated memory
+    uint32_t memory_size; // Current size of the memory in bytes
+
+    wah_value_t **tables;
+    uint32_t table_count;
+} wah_exec_context_t;
+
 // Convert error code to human-readable string
 const char *wah_strerror(wah_error_t err);
+
+wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah_module_t *module);
+
+// Creates and initializes an execution context.
+wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module);
+
+// Destroys and frees resources of an execution context.
+void wah_exec_context_destroy(wah_exec_context_t *exec_ctx);
+
+// The main entry point to call a WebAssembly function.
+wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
+
+// --- Module Cleanup ---
+void wah_free_module(wah_module_t *module);
+
+////////////////////////////////////////////////////////////////////////////////
+
+#ifdef WAH_IMPLEMENTATION
+
+#include <string.h> // For memcpy, memset
+#include <stdlib.h> // For malloc, free
+#include <assert.h> // For assert
+#include <stdint.h> // For INT32_MIN, INT32_MAX
+#include <math.h> // For floating-point functions
+#if defined(_MSC_VER)
+#include <intrin.h> // For MSVC intrinsics
+#endif
+
+#ifdef WAH_DEBUG
+#include <stdio.h>
+#define WAH_LOG(fmt, ...) printf("(%d) " fmt "\n", __LINE__, ##__VA_ARGS__)
+#else
+#define WAH_LOG(fmt, ...) (void)(0)
+#endif
+
+// --- WebAssembly Types ---
+typedef enum {
+    WAH_VAL_TYPE_I32 = 0x7F,
+    WAH_VAL_TYPE_I64 = 0x7E,
+    WAH_VAL_TYPE_F32 = 0x7D,
+    WAH_VAL_TYPE_F64 = 0x7C,
+    WAH_VAL_TYPE_FUNCREF = 0x70, // For table elements (function references)
+    WAH_VAL_TYPE_FUNC = 0x60,    // For function types
+    WAH_VAL_TYPE_BLOCK_TYPE = 0x40, // Special type for blocks
+    WAH_VAL_TYPE_ANY = -5 // Represents any type for stack-polymorphic validation
+} wah_val_type_t;
+
+// --- WebAssembly Opcodes (subset) ---
+typedef enum {
+    // Control Flow Operators
+    WAH_OP_UNREACHABLE = 0x00, WAH_OP_NOP = 0x01, WAH_OP_BLOCK = 0x02, WAH_OP_LOOP = 0x03,
+    WAH_OP_IF = 0x04, WAH_OP_ELSE = 0x05,
+    WAH_OP_END = 0x0B, WAH_OP_BR = 0x0C, WAH_OP_BR_IF = 0x0D, WAH_OP_BR_TABLE = 0x0E,
+    WAH_OP_RETURN = 0x0F, WAH_OP_CALL = 0x10, WAH_OP_CALL_INDIRECT = 0x11,
+
+    // Parametric Operators
+    WAH_OP_DROP = 0x1A,
+    WAH_OP_SELECT = 0x1B,
+
+    // Variable Access
+    WAH_OP_LOCAL_GET = 0x20, WAH_OP_LOCAL_SET = 0x21, WAH_OP_LOCAL_TEE = 0x22,
+    WAH_OP_GLOBAL_GET = 0x23, WAH_OP_GLOBAL_SET = 0x24,
+
+    // Memory Operators
+    WAH_OP_I32_LOAD = 0x28, WAH_OP_I64_LOAD = 0x29, WAH_OP_F32_LOAD = 0x2A, WAH_OP_F64_LOAD = 0x2B,
+    WAH_OP_I32_LOAD8_S = 0x2C, WAH_OP_I32_LOAD8_U = 0x2D, WAH_OP_I32_LOAD16_S = 0x2E, WAH_OP_I32_LOAD16_U = 0x2F,
+    WAH_OP_I64_LOAD8_S = 0x30, WAH_OP_I64_LOAD8_U = 0x31, WAH_OP_I64_LOAD16_S = 0x32, WAH_OP_I64_LOAD16_U = 0x33,
+    WAH_OP_I64_LOAD32_S = 0x34, WAH_OP_I64_LOAD32_U = 0x35,
+    WAH_OP_I32_STORE = 0x36, WAH_OP_I64_STORE = 0x37, WAH_OP_F32_STORE = 0x38, WAH_OP_F64_STORE = 0x39,
+    WAH_OP_I32_STORE8 = 0x3A, WAH_OP_I32_STORE16 = 0x3B,
+    WAH_OP_I64_STORE8 = 0x3C, WAH_OP_I64_STORE16 = 0x3D, WAH_OP_I64_STORE32 = 0x3E,
+    WAH_OP_MEMORY_SIZE = 0x3F,
+    WAH_OP_MEMORY_GROW = 0x40,
+    WAH_OP_MEMORY_FILL = 0xC00B,
+
+    // Constants
+    WAH_OP_I32_CONST = 0x41, WAH_OP_I64_CONST = 0x42, WAH_OP_F32_CONST = 0x43, WAH_OP_F64_CONST = 0x44,
+
+    // Comparison Operators
+    WAH_OP_I32_EQZ = 0x45, WAH_OP_I32_EQ = 0x46, WAH_OP_I32_NE = 0x47,
+    WAH_OP_I32_LT_S = 0x48, WAH_OP_I32_LT_U = 0x49, WAH_OP_I32_GT_S = 0x4A, WAH_OP_I32_GT_U = 0x4B,
+    WAH_OP_I32_LE_S = 0x4C, WAH_OP_I32_LE_U = 0x4D, WAH_OP_I32_GE_S = 0x4E, WAH_OP_I32_GE_U = 0x4F,
+    WAH_OP_I64_EQZ = 0x50, WAH_OP_I64_EQ = 0x51, WAH_OP_I64_NE = 0x52,
+    WAH_OP_I64_LT_S = 0x53, WAH_OP_I64_LT_U = 0x54, WAH_OP_I64_GT_S = 0x55, WAH_OP_I64_GT_U = 0x56,
+    WAH_OP_I64_LE_S = 0x57, WAH_OP_I64_LE_U = 0x58, WAH_OP_I64_GE_S = 0x59, WAH_OP_I64_GE_U = 0x5A,
+    WAH_OP_F32_EQ = 0x5B, WAH_OP_F32_NE = 0x5C,
+    WAH_OP_F32_LT = 0x5D, WAH_OP_F32_GT = 0x5E, WAH_OP_F32_LE = 0x5F, WAH_OP_F32_GE = 0x60,
+    WAH_OP_F64_EQ = 0x61, WAH_OP_F64_NE = 0x62,
+    WAH_OP_F64_LT = 0x63, WAH_OP_F64_GT = 0x64, WAH_OP_F64_LE = 0x65, WAH_OP_F64_GE = 0x66,
+
+    // Numeric Operators
+    WAH_OP_I32_CLZ = 0x67, WAH_OP_I32_CTZ = 0x68, WAH_OP_I32_POPCNT = 0x69,
+    WAH_OP_I32_ADD = 0x6A, WAH_OP_I32_SUB = 0x6B, WAH_OP_I32_MUL = 0x6C,
+    WAH_OP_I32_DIV_S = 0x6D, WAH_OP_I32_DIV_U = 0x6E, WAH_OP_I32_REM_S = 0x6F, WAH_OP_I32_REM_U = 0x70,
+    WAH_OP_I32_AND = 0x71, WAH_OP_I32_OR = 0x72, WAH_OP_I32_XOR = 0x73,
+    WAH_OP_I32_SHL = 0x74, WAH_OP_I32_SHR_S = 0x75, WAH_OP_I32_SHR_U = 0x76,
+    WAH_OP_I32_ROTL = 0x77, WAH_OP_I32_ROTR = 0x78,
+    WAH_OP_I64_CLZ = 0x79, WAH_OP_I64_CTZ = 0x7A, WAH_OP_I64_POPCNT = 0x7B,
+    WAH_OP_I64_ADD = 0x7C, WAH_OP_I64_SUB = 0x7D, WAH_OP_I64_MUL = 0x7E,
+    WAH_OP_I64_DIV_S = 0x7F, WAH_OP_I64_DIV_U = 0x80, WAH_OP_I64_REM_S = 0x81, WAH_OP_I64_REM_U = 0x82,
+    WAH_OP_I64_AND = 0x83, WAH_OP_I64_OR = 0x84, WAH_OP_I64_XOR = 0x85,
+    WAH_OP_I64_SHL = 0x86, WAH_OP_I64_SHR_S = 0x87, WAH_OP_I64_SHR_U = 0x88,
+    WAH_OP_I64_ROTL = 0x89, WAH_OP_I64_ROTR = 0x8A,
+    WAH_OP_F32_ABS = 0x8B, WAH_OP_F32_NEG = 0x8C, WAH_OP_F32_CEIL = 0x8D, WAH_OP_F32_FLOOR = 0x8E,
+    WAH_OP_F32_TRUNC = 0x8F, WAH_OP_F32_NEAREST = 0x90, WAH_OP_F32_SQRT = 0x91,
+    WAH_OP_F32_ADD = 0x92, WAH_OP_F32_SUB = 0x93, WAH_OP_F32_MUL = 0x94, WAH_OP_F32_DIV = 0x95,
+    WAH_OP_F32_MIN = 0x96, WAH_OP_F32_MAX = 0x97, WAH_OP_F32_COPYSIGN = 0x98,
+    WAH_OP_F64_ABS = 0x99, WAH_OP_F64_NEG = 0x9A, WAH_OP_F64_CEIL = 0x9B, WAH_OP_F64_FLOOR = 0x9C,
+    WAH_OP_F64_TRUNC = 0x9D, WAH_OP_F64_NEAREST = 0x9E, WAH_OP_F64_SQRT = 0x9F,
+    WAH_OP_F64_ADD = 0xA0, WAH_OP_F64_SUB = 0xA1, WAH_OP_F64_MUL = 0xA2, WAH_OP_F64_DIV = 0xA3,
+    WAH_OP_F64_MIN = 0xA4, WAH_OP_F64_MAX = 0xA5, WAH_OP_F64_COPYSIGN = 0xA6,
+
+    // Conversion Operators
+    WAH_OP_I32_WRAP_I64 = 0xA7,
+    WAH_OP_I32_TRUNC_F32_S = 0xA8, WAH_OP_I32_TRUNC_F32_U = 0xA9,
+    WAH_OP_I32_TRUNC_F64_S = 0xAA, WAH_OP_I32_TRUNC_F64_U = 0xAB,
+    WAH_OP_I64_EXTEND_I32_S = 0xAC, WAH_OP_I64_EXTEND_I32_U = 0xAD,
+    WAH_OP_I64_TRUNC_F32_S = 0xAE, WAH_OP_I64_TRUNC_F32_U = 0xAF,
+    WAH_OP_I64_TRUNC_F64_S = 0xB0, WAH_OP_I64_TRUNC_F64_U = 0xB1,
+    WAH_OP_F32_CONVERT_I32_S = 0xB2, WAH_OP_F32_CONVERT_I32_U = 0xB3,
+    WAH_OP_F32_CONVERT_I64_S = 0xB4, WAH_OP_F32_CONVERT_I64_U = 0xB5,
+    WAH_OP_F32_DEMOTE_F64 = 0xB6,
+    WAH_OP_F64_CONVERT_I32_S = 0xB7, WAH_OP_F64_CONVERT_I32_U = 0xB8,
+    WAH_OP_F64_CONVERT_I64_S = 0xB9, WAH_OP_F64_CONVERT_I64_U = 0xBA,
+    WAH_OP_F64_PROMOTE_F32 = 0xBB,
+    WAH_OP_I32_REINTERPRET_F32 = 0xBC, WAH_OP_I64_REINTERPRET_F64 = 0xBD,
+    WAH_OP_F32_REINTERPRET_I32 = 0xBE, WAH_OP_F64_REINTERPRET_I64 = 0xBF,
+} wah_opcode_t;
 
 // --- Memory Structure ---
 #define WAH_WASM_PAGE_SIZE 65536 // 64 KB
 
-typedef struct { uint32_t min_pages, max_pages; } wah_memory_type_t;
+typedef struct wah_memory_type_s {
+    uint32_t min_pages, max_pages;
+} wah_memory_type_t;
+
+// --- WebAssembly Table Structures ---
+typedef struct wah_table_type_s {
+    wah_val_type_t elem_type;
+    uint32_t min_elements;
+    uint32_t max_elements; // 0 if no maximum
+} wah_table_type_t;
+
+// --- WebAssembly Element Segment Structure ---
+typedef struct wah_element_segment_s {
+    uint32_t table_idx;
+    uint32_t offset; // Result of the offset_expr
+    uint32_t num_elems;
+    uint32_t *func_indices; // Array of function indices
+} wah_element_segment_t;
+
+// --- Operand Stack ---
+typedef struct {
+    wah_value_t *data; // Dynamically allocated based on function requirements
+    uint32_t sp; // Stack pointer
+    uint32_t capacity; // Allocated capacity
+} wah_stack_t;
+
+// --- Type Stack for Validation ---
+#define WAH_MAX_TYPE_STACK_SIZE 1024 // Maximum size of the type stack for validation
+typedef struct {
+    wah_val_type_t data[WAH_MAX_TYPE_STACK_SIZE];
+    uint32_t sp; // Stack pointer
+} wah_type_stack_t;
+
+// --- Execution Context ---
+
+// Represents a single function call's state on the call stack.
+typedef struct wah_call_frame_s {
+    const uint8_t *bytecode_ip;  // Instruction pointer into the parsed bytecode
+    const struct wah_code_body_s *code; // The function body being executed
+    uint32_t locals_offset;      // Offset into the shared value_stack for this frame's locals
+    uint32_t func_idx;           // Index of the function being executed
+} wah_call_frame_t;
+
+// The main context for the entire WebAssembly interpretation.
+#define WAH_DEFAULT_MAX_CALL_DEPTH 1024
+#define WAH_DEFAULT_VALUE_STACK_SIZE (64 * 1024)
+
+// --- Function Type ---
+typedef struct wah_func_type_s {
+    uint32_t param_count;
+    wah_val_type_t *param_types;
+    uint32_t result_count;
+    wah_val_type_t *result_types;
+} wah_func_type_t;
+
+// --- Pre-parsed Opcode Structure for Optimized Execution ---
+typedef struct {
+    uint8_t *bytecode;           // Combined array of opcodes and arguments
+    uint32_t bytecode_size;      // Total size of the bytecode array
+} wah_parsed_code_t;
+
+// --- Code Body Structure ---
+typedef struct wah_code_body_s {
+    uint32_t local_count;
+    wah_val_type_t *local_types; // Array of types for local variables
+    uint32_t code_size;
+    const uint8_t *code; // Pointer to the raw instruction bytes within the WASM binary
+    uint32_t max_stack_depth; // Maximum operand stack depth required
+    wah_parsed_code_t parsed_code; // Pre-parsed opcodes and arguments for optimized execution
+} wah_code_body_t;
+
+// --- Global Variable Structure ---
+typedef struct wah_global_s {
+    wah_val_type_t type;
+    bool is_mutable;
+    wah_value_t initial_value; // Stored after parsing the init_expr
+} wah_global_t;
+
+// --- Validation Context ---
+#define WAH_MAX_CONTROL_DEPTH 256
+typedef struct {
+    wah_opcode_t opcode;
+    uint32_t type_stack_sp; // Type stack pointer at the start of the block
+    wah_func_type_t block_type; // For if/block/loop
+    bool else_found; // For if blocks
+    bool is_unreachable; // True if this control frame is currently unreachable
+    uint32_t stack_height; // Stack height at the beginning of the block
+} wah_validation_control_frame_t;
+
+typedef struct {
+    wah_type_stack_t type_stack;
+    const wah_func_type_t *func_type; // Type of the function being validated
+    const wah_module_t *module; // Reference to the module for global/function lookups
+    uint32_t total_locals; // Total number of locals (params + declared locals)
+    uint32_t current_stack_depth; // Current stack depth during validation
+    uint32_t max_stack_depth; // Maximum stack depth seen during validation
+    bool is_unreachable; // True if the current code path is unreachable
+
+    // Control flow validation stack
+    wah_validation_control_frame_t control_stack[WAH_MAX_CONTROL_DEPTH];
+    uint32_t control_sp;
+} wah_validation_context_t;
+
+// --- Helper Macros ---
+#define WAH_CHECK(expr) do { \
+    wah_error_t _err = (expr); \
+    if (_err != WAH_OK) { WAH_LOG("WAH_CHECK(%s) failed due to: %s", #expr, wah_strerror(_err)); return _err; } \
+} while(0)
+
+#define WAH_CHECK_GOTO(expr, label) do { \
+    err = (expr); \
+    if (err != WAH_OK) { WAH_LOG("WAH_CHECK_GOTO(%s, %s) failed due to: %s", #expr, #label, wah_strerror(err)); goto label; } \
+} while(0)
+
+#define WAH_ENSURE(cond, error) do { \
+    if (!(cond)) { WAH_LOG("WAH_ENSURE(%s, %s) failed", #cond, #error); return (error); } \
+} while(0)
+
+#define WAH_ENSURE_GOTO(cond, error, label) do { \
+    if (!(cond)) { err = (error); WAH_LOG("WAH_ENSURE_GOTO(%s, %s, %s) failed", #cond, #error, #label); goto label; } \
+} while(0)
+
+// --- Safe Memory Allocation ---
+static inline wah_error_t wah_malloc(size_t count, size_t elemsize, void** out_ptr) {
+    *out_ptr = NULL;
+    if (count == 0) {
+        return WAH_OK;
+    }
+    WAH_ENSURE(elemsize == 0 || count <= SIZE_MAX / elemsize, WAH_ERROR_OUT_OF_MEMORY);
+    size_t total_size = count * elemsize;
+    *out_ptr = malloc(total_size);
+    WAH_ENSURE(*out_ptr, WAH_ERROR_OUT_OF_MEMORY);
+    return WAH_OK;
+}
+
+static inline wah_error_t wah_realloc(size_t count, size_t elemsize, void** p_ptr) {
+    if (count == 0) {
+        free(*p_ptr);
+        *p_ptr = NULL;
+        return WAH_OK;
+    }
+    WAH_ENSURE(elemsize == 0 || count <= SIZE_MAX / elemsize, WAH_ERROR_OUT_OF_MEMORY);
+    size_t total_size = count * elemsize;
+    void* new_ptr = realloc(*p_ptr, total_size);
+    WAH_ENSURE(new_ptr, WAH_ERROR_OUT_OF_MEMORY);
+    *p_ptr = new_ptr;
+    return WAH_OK;
+}
+
+#define WAH_MALLOC_ARRAY(ptr, count) \
+    do { \
+        void *_alloc_ptr; \
+        wah_error_t _alloc_err = wah_malloc((count), sizeof(*(ptr)), &_alloc_ptr); \
+        if (_alloc_err != WAH_OK) { \
+            WAH_LOG("WAH_MALLOC_ARRAY(%s, %s) failed due to OOM", #ptr, #count); \
+            return _alloc_err; \
+        } \
+        (ptr) = _alloc_ptr; \
+    } while (0)
+
+#define WAH_REALLOC_ARRAY(ptr, count) \
+    do { \
+        void *_alloc_ptr = (ptr); \
+        wah_error_t _alloc_err = wah_realloc((count), sizeof(*(ptr)), &_alloc_ptr); \
+        if (_alloc_err != WAH_OK) { \
+            WAH_LOG("WAH_REALLOC_ARRAY(%s, %s) failed due to OOM", #ptr, #count); \
+            return _alloc_err; \
+        } \
+        (ptr) = _alloc_ptr; \
+    } while (0)
+
+#define WAH_MALLOC_ARRAY_GOTO(ptr, count, label) \
+    do { \
+        void* _alloc_ptr; \
+        err = wah_malloc((count), sizeof(*(ptr)), &_alloc_ptr); \
+        if (err != WAH_OK) { \
+            WAH_LOG("WAH_MALLOC_ARRAY_GOTO(%s, %s, %s) failed due to OOM", #ptr, #count, #label); \
+            goto label; \
+        } \
+        (ptr) = _alloc_ptr; \
+    } while (0)
+
+#define WAH_REALLOC_ARRAY_GOTO(ptr, count, label) \
+    do { \
+        void* _alloc_ptr = ptr; \
+        err = wah_realloc((count), sizeof(*(ptr)), &_alloc_ptr); \
+        if (err != WAH_OK) { \
+            WAH_LOG("WAH_REALLOC_ARRAY_GOTO(%s, %s, %s) failed due to OOM", #ptr, #count, #label); \
+            goto label; \
+        } \
+        (ptr) = _alloc_ptr; \
+    } while (0)
+
+const char *wah_strerror(wah_error_t err) {
+    switch (err) {
+        case WAH_OK: return "Success";
+        case WAH_ERROR_INVALID_MAGIC_NUMBER: return "Invalid WASM magic number";
+        case WAH_ERROR_INVALID_VERSION: return "Invalid WASM version";
+        case WAH_ERROR_UNEXPECTED_EOF: return "Unexpected end of file";
+        case WAH_ERROR_UNKNOWN_SECTION: return "Unknown section or opcode";
+        case WAH_ERROR_TOO_LARGE: return "exceeding implementation limits (or value too large)";
+        case WAH_ERROR_OUT_OF_MEMORY: return "Out of memory";
+        case WAH_ERROR_VALIDATION_FAILED: return "Validation failed";
+        case WAH_ERROR_TRAP: return "Runtime trap";
+        case WAH_ERROR_CALL_STACK_OVERFLOW: return "Call stack overflow";
+        case WAH_ERROR_MEMORY_OUT_OF_BOUNDS: return "Memory access out of bounds";
+        default: return "Unknown error";
+    }
+}
 
 // --- LEB128 Decoding ---
 // Helper function to decode an unsigned LEB128 integer
@@ -45,11 +425,11 @@ static inline wah_error_t wah_decode_uleb128(const uint8_t **ptr, const uint8_t 
     uint8_t byte;
 
     for (int i = 0; i < 5; ++i) { // Max 5 bytes for a 32-bit value
-        if (*ptr >= end) return WAH_ERROR_UNEXPECTED_EOF;
+        WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
         byte = *(*ptr)++;
         val |= (uint64_t)(byte & 0x7F) << shift;
         if ((byte & 0x80) == 0) {
-            if (val > UINT32_MAX) return WAH_ERROR_TOO_LARGE;
+            WAH_ENSURE(val <= UINT32_MAX, WAH_ERROR_TOO_LARGE);
             *result = (uint32_t)val;
             return WAH_OK;
         }
@@ -66,7 +446,7 @@ static inline wah_error_t wah_decode_sleb128_32(const uint8_t **ptr, const uint8
     uint8_t byte;
 
     for (int i = 0; i < 5; ++i) { // Max 5 bytes for a 32-bit value
-        if (*ptr >= end) return WAH_ERROR_UNEXPECTED_EOF;
+        WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
         byte = *(*ptr)++;
         val |= (uint64_t)(byte & 0x7F) << shift;
         shift += 7;
@@ -78,7 +458,7 @@ static inline wah_error_t wah_decode_sleb128_32(const uint8_t **ptr, const uint8
                     val |= ~0ULL << shift;
                 }
             }
-            if ((int64_t)val < INT32_MIN || (int64_t)val > INT32_MAX) return WAH_ERROR_TOO_LARGE;
+            WAH_ENSURE((int64_t)val >= INT32_MIN && (int64_t)val <= INT32_MAX, WAH_ERROR_TOO_LARGE);
             *result = (int32_t)val;
             return WAH_OK;
         }
@@ -94,8 +474,8 @@ static inline wah_error_t wah_decode_uleb128_64(const uint8_t **ptr, const uint8
     uint8_t byte;
 
     do {
-        if (*ptr >= end) return WAH_ERROR_UNEXPECTED_EOF;
-        if (shift >= 64) return WAH_ERROR_TOO_LARGE;
+        WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
+        WAH_ENSURE(shift < 64, WAH_ERROR_TOO_LARGE);
         byte = *(*ptr)++;
         *result |= (uint64_t)(byte & 0x7F) << shift;
         shift += 7;
@@ -111,8 +491,8 @@ static inline wah_error_t wah_decode_sleb128_64(const uint8_t **ptr, const uint8
     uint8_t byte;
 
     do {
-        if (*ptr >= end) return WAH_ERROR_UNEXPECTED_EOF;
-        if (shift >= 64) return WAH_ERROR_TOO_LARGE;
+        WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
+        WAH_ENSURE(shift < 64, WAH_ERROR_TOO_LARGE);
         byte = *(*ptr)++;
         val |= (uint64_t)(byte & 0x7F) << shift;
         shift += 7;
@@ -214,306 +594,8 @@ static inline void wah_write_f64_le(uint8_t *ptr, double val) {
     wah_write_u64_le(ptr, u.i);
 }
 
-// --- WebAssembly Types ---
-typedef enum {
-    WAH_VAL_TYPE_I32 = 0x7F,
-    WAH_VAL_TYPE_I64 = 0x7E,
-    WAH_VAL_TYPE_F32 = 0x7D,
-    WAH_VAL_TYPE_F64 = 0x7C,
-    WAH_VAL_TYPE_FUNCREF = 0x70, // For table elements (function references)
-    WAH_VAL_TYPE_FUNC = 0x60,    // For function types
-    WAH_VAL_TYPE_BLOCK_TYPE = 0x40, // Special type for blocks
-    WAH_VAL_TYPE_ANY = -5 // Represents any type for stack-polymorphic validation
-} wah_val_type_t;
-
-// --- WebAssembly Opcodes (subset) ---
-typedef enum {
-    // Control Flow Operators
-    WAH_OP_UNREACHABLE = 0x00, WAH_OP_NOP = 0x01, WAH_OP_BLOCK = 0x02, WAH_OP_LOOP = 0x03,
-    WAH_OP_IF = 0x04, WAH_OP_ELSE = 0x05,
-    WAH_OP_END = 0x0B, WAH_OP_BR = 0x0C, WAH_OP_BR_IF = 0x0D, WAH_OP_BR_TABLE = 0x0E,
-    WAH_OP_RETURN = 0x0F, WAH_OP_CALL = 0x10, WAH_OP_CALL_INDIRECT = 0x11,
-
-    // Parametric Operators
-    WAH_OP_DROP = 0x1A,
-    WAH_OP_SELECT = 0x1B,
-
-    // Variable Access
-    WAH_OP_LOCAL_GET = 0x20, WAH_OP_LOCAL_SET = 0x21, WAH_OP_LOCAL_TEE = 0x22,
-    WAH_OP_GLOBAL_GET = 0x23, WAH_OP_GLOBAL_SET = 0x24,
-
-    // Memory Operators
-    WAH_OP_I32_LOAD = 0x28, WAH_OP_I64_LOAD = 0x29, WAH_OP_F32_LOAD = 0x2A, WAH_OP_F64_LOAD = 0x2B,
-    WAH_OP_I32_LOAD8_S = 0x2C, WAH_OP_I32_LOAD8_U = 0x2D, WAH_OP_I32_LOAD16_S = 0x2E, WAH_OP_I32_LOAD16_U = 0x2F,
-    WAH_OP_I64_LOAD8_S = 0x30, WAH_OP_I64_LOAD8_U = 0x31, WAH_OP_I64_LOAD16_S = 0x32, WAH_OP_I64_LOAD16_U = 0x33,
-    WAH_OP_I64_LOAD32_S = 0x34, WAH_OP_I64_LOAD32_U = 0x35,
-    WAH_OP_I32_STORE = 0x36, WAH_OP_I64_STORE = 0x37, WAH_OP_F32_STORE = 0x38, WAH_OP_F64_STORE = 0x39,
-    WAH_OP_I32_STORE8 = 0x3A, WAH_OP_I32_STORE16 = 0x3B,
-    WAH_OP_I64_STORE8 = 0x3C, WAH_OP_I64_STORE16 = 0x3D, WAH_OP_I64_STORE32 = 0x3E,
-    WAH_OP_MEMORY_SIZE = 0x3F,
-    WAH_OP_MEMORY_GROW = 0x40,
-    WAH_OP_MEMORY_FILL = 0xC00B,
-
-    // Constants
-    WAH_OP_I32_CONST = 0x41, WAH_OP_I64_CONST = 0x42, WAH_OP_F32_CONST = 0x43, WAH_OP_F64_CONST = 0x44,
-
-    // Comparison Operators
-    WAH_OP_I32_EQZ = 0x45, WAH_OP_I32_EQ = 0x46, WAH_OP_I32_NE = 0x47,
-    WAH_OP_I32_LT_S = 0x48, WAH_OP_I32_LT_U = 0x49, WAH_OP_I32_GT_S = 0x4A, WAH_OP_I32_GT_U = 0x4B,
-    WAH_OP_I32_LE_S = 0x4C, WAH_OP_I32_LE_U = 0x4D, WAH_OP_I32_GE_S = 0x4E, WAH_OP_I32_GE_U = 0x4F,
-    WAH_OP_I64_EQZ = 0x50, WAH_OP_I64_EQ = 0x51, WAH_OP_I64_NE = 0x52,
-    WAH_OP_I64_LT_S = 0x53, WAH_OP_I64_LT_U = 0x54, WAH_OP_I64_GT_S = 0x55, WAH_OP_I64_GT_U = 0x56,
-    WAH_OP_I64_LE_S = 0x57, WAH_OP_I64_LE_U = 0x58, WAH_OP_I64_GE_S = 0x59, WAH_OP_I64_GE_U = 0x5A,
-    WAH_OP_F32_EQ = 0x5B, WAH_OP_F32_NE = 0x5C,
-    WAH_OP_F32_LT = 0x5D, WAH_OP_F32_GT = 0x5E, WAH_OP_F32_LE = 0x5F, WAH_OP_F32_GE = 0x60,
-    WAH_OP_F64_EQ = 0x61, WAH_OP_F64_NE = 0x62,
-    WAH_OP_F64_LT = 0x63, WAH_OP_F64_GT = 0x64, WAH_OP_F64_LE = 0x65, WAH_OP_F64_GE = 0x66,
-
-    // Numeric Operators
-    WAH_OP_I32_CLZ = 0x67, WAH_OP_I32_CTZ = 0x68, WAH_OP_I32_POPCNT = 0x69,
-    WAH_OP_I32_ADD = 0x6A, WAH_OP_I32_SUB = 0x6B, WAH_OP_I32_MUL = 0x6C,
-    WAH_OP_I32_DIV_S = 0x6D, WAH_OP_I32_DIV_U = 0x6E, WAH_OP_I32_REM_S = 0x6F, WAH_OP_I32_REM_U = 0x70,
-    WAH_OP_I32_AND = 0x71, WAH_OP_I32_OR = 0x72, WAH_OP_I32_XOR = 0x73,
-    WAH_OP_I32_SHL = 0x74, WAH_OP_I32_SHR_S = 0x75, WAH_OP_I32_SHR_U = 0x76,
-    WAH_OP_I32_ROTL = 0x77, WAH_OP_I32_ROTR = 0x78,
-    WAH_OP_I64_CLZ = 0x79, WAH_OP_I64_CTZ = 0x7A, WAH_OP_I64_POPCNT = 0x7B,
-    WAH_OP_I64_ADD = 0x7C, WAH_OP_I64_SUB = 0x7D, WAH_OP_I64_MUL = 0x7E,
-    WAH_OP_I64_DIV_S = 0x7F, WAH_OP_I64_DIV_U = 0x80, WAH_OP_I64_REM_S = 0x81, WAH_OP_I64_REM_U = 0x82,
-    WAH_OP_I64_AND = 0x83, WAH_OP_I64_OR = 0x84, WAH_OP_I64_XOR = 0x85,
-    WAH_OP_I64_SHL = 0x86, WAH_OP_I64_SHR_S = 0x87, WAH_OP_I64_SHR_U = 0x88,
-    WAH_OP_I64_ROTL = 0x89, WAH_OP_I64_ROTR = 0x8A,
-    WAH_OP_F32_ABS = 0x8B, WAH_OP_F32_NEG = 0x8C, WAH_OP_F32_CEIL = 0x8D, WAH_OP_F32_FLOOR = 0x8E,
-    WAH_OP_F32_TRUNC = 0x8F, WAH_OP_F32_NEAREST = 0x90, WAH_OP_F32_SQRT = 0x91,
-    WAH_OP_F32_ADD = 0x92, WAH_OP_F32_SUB = 0x93, WAH_OP_F32_MUL = 0x94, WAH_OP_F32_DIV = 0x95,
-    WAH_OP_F32_MIN = 0x96, WAH_OP_F32_MAX = 0x97, WAH_OP_F32_COPYSIGN = 0x98,
-    WAH_OP_F64_ABS = 0x99, WAH_OP_F64_NEG = 0x9A, WAH_OP_F64_CEIL = 0x9B, WAH_OP_F64_FLOOR = 0x9C,
-    WAH_OP_F64_TRUNC = 0x9D, WAH_OP_F64_NEAREST = 0x9E, WAH_OP_F64_SQRT = 0x9F,
-    WAH_OP_F64_ADD = 0xA0, WAH_OP_F64_SUB = 0xA1, WAH_OP_F64_MUL = 0xA2, WAH_OP_F64_DIV = 0xA3,
-    WAH_OP_F64_MIN = 0xA4, WAH_OP_F64_MAX = 0xA5, WAH_OP_F64_COPYSIGN = 0xA6,
-
-    // Conversion Operators
-    WAH_OP_I32_WRAP_I64 = 0xA7,
-    WAH_OP_I32_TRUNC_F32_S = 0xA8, WAH_OP_I32_TRUNC_F32_U = 0xA9,
-    WAH_OP_I32_TRUNC_F64_S = 0xAA, WAH_OP_I32_TRUNC_F64_U = 0xAB,
-    WAH_OP_I64_EXTEND_I32_S = 0xAC, WAH_OP_I64_EXTEND_I32_U = 0xAD,
-    WAH_OP_I64_TRUNC_F32_S = 0xAE, WAH_OP_I64_TRUNC_F32_U = 0xAF,
-    WAH_OP_I64_TRUNC_F64_S = 0xB0, WAH_OP_I64_TRUNC_F64_U = 0xB1,
-    WAH_OP_F32_CONVERT_I32_S = 0xB2, WAH_OP_F32_CONVERT_I32_U = 0xB3,
-    WAH_OP_F32_CONVERT_I64_S = 0xB4, WAH_OP_F32_CONVERT_I64_U = 0xB5,
-    WAH_OP_F32_DEMOTE_F64 = 0xB6,
-    WAH_OP_F64_CONVERT_I32_S = 0xB7, WAH_OP_F64_CONVERT_I32_U = 0xB8,
-    WAH_OP_F64_CONVERT_I64_S = 0xB9, WAH_OP_F64_CONVERT_I64_U = 0xBA,
-    WAH_OP_F64_PROMOTE_F32 = 0xBB,
-    WAH_OP_I32_REINTERPRET_F32 = 0xBC, WAH_OP_I64_REINTERPRET_F64 = 0xBD,
-    WAH_OP_F32_REINTERPRET_I32 = 0xBE, WAH_OP_F64_REINTERPRET_I64 = 0xBF,
-} wah_opcode_t;
-
-typedef union {
-    int32_t i32;
-    int64_t i64;
-    float f32;
-    double f64;
-} wah_value_t;
-
-// --- WebAssembly Table Structures ---
-typedef struct {
-    wah_val_type_t elem_type;
-    uint32_t min_elements;
-    uint32_t max_elements; // 0 if no maximum
-} wah_table_type_t;
-
-// --- WebAssembly Element Segment Structure ---
-typedef struct {
-    uint32_t table_idx;
-    uint32_t offset; // Result of the offset_expr
-    uint32_t num_elems;
-    uint32_t *func_indices; // Array of function indices
-} wah_element_segment_t;
-
-// --- Operand Stack ---
-typedef struct {
-    wah_value_t *data; // Dynamically allocated based on function requirements
-    uint32_t sp; // Stack pointer
-    uint32_t capacity; // Allocated capacity
-} wah_stack_t;
-
-// --- Type Stack for Validation ---
-
-#define WAH_MAX_TYPE_STACK_SIZE 1024 // Maximum size of the type stack for validation
-typedef struct {
-    wah_val_type_t data[WAH_MAX_TYPE_STACK_SIZE];
-    uint32_t sp; // Stack pointer
-} wah_type_stack_t;
-
-// --- Execution Context (New Design) ---
-
-// Forward declarations for structures used in the execution context.
-struct wah_code_body_s;
-struct wah_module_s;
-
-// Represents a single function call's state on the call stack.
-typedef struct {
-    const uint8_t *bytecode_ip;  // Instruction pointer into the parsed bytecode
-    const struct wah_code_body_s *code; // The function body being executed
-    uint32_t locals_offset;      // Offset into the shared value_stack for this frame's locals
-    uint32_t func_idx;           // Index of the function being executed
-} wah_call_frame_t;
-
-// The main context for the entire WebAssembly interpretation.
-#define WAH_DEFAULT_MAX_CALL_DEPTH 1024
-#define WAH_DEFAULT_VALUE_STACK_SIZE (64 * 1024)
-
-typedef struct wah_exec_context_s {
-    wah_value_t *value_stack;       // A single, large stack for operands and locals
-    uint32_t sp;                    // Stack pointer for the value_stack (points to next free slot)
-    uint32_t value_stack_capacity;
-
-    wah_call_frame_t *call_stack;   // The call frame stack
-    uint32_t call_depth;            // Current call depth (top of the call_stack)
-    uint32_t call_stack_capacity;
-
-    uint32_t max_call_depth;        // Configurable max call depth
-
-    wah_value_t *globals;           // Mutable global values
-    uint32_t global_count;
-
-    const struct wah_module_s *module;
-
-    // Memory
-    uint8_t *memory_base; // Pointer to the allocated memory
-    uint32_t memory_size; // Current size of the memory in bytes
-
-    wah_value_t **tables;
-    uint32_t table_count;
-} wah_exec_context_t;
-
-// --- Function Type ---
-typedef struct {
-    uint32_t param_count;
-    wah_val_type_t *param_types;
-    uint32_t result_count;
-    wah_val_type_t *result_types;
-} wah_func_type_t;
-
-// --- Pre-parsed Opcode Structure for Optimized Execution ---
-typedef struct {
-    uint8_t *bytecode;           // Combined array of opcodes and arguments
-    uint32_t bytecode_size;      // Total size of the bytecode array
-} wah_parsed_code_t;
-
-// --- Code Body Structure ---
-typedef struct wah_code_body_s {
-    uint32_t local_count;
-    wah_val_type_t *local_types; // Array of types for local variables
-    uint32_t code_size;
-    const uint8_t *code; // Pointer to the raw instruction bytes within the WASM binary
-    uint32_t max_stack_depth; // Maximum operand stack depth required
-    wah_parsed_code_t parsed_code; // Pre-parsed opcodes and arguments for optimized execution
-} wah_code_body_t;
-
-// --- Global Variable Structure ---
-typedef struct {
-    wah_val_type_t type;
-    bool is_mutable;
-    wah_value_t initial_value; // Stored after parsing the init_expr
-} wah_global_t;
-
-// --- Module Structure ---
-typedef struct wah_module_s {
-    uint32_t type_count;
-    uint32_t function_count;
-    uint32_t code_count;
-    uint32_t global_count;
-    uint32_t memory_count;
-    uint32_t table_count;
-    uint32_t element_segment_count;
-
-    wah_func_type_t *types;
-    uint32_t *function_type_indices; // Index into the types array
-    wah_code_body_t *code_bodies;
-    wah_global_t *globals;
-    wah_memory_type_t *memories;
-    wah_table_type_t *tables;
-    wah_element_segment_t *element_segments;
-
-    uint32_t start_function_idx;
-    bool has_start_function;
-    // Add other sections as they are implemented
-} wah_module_t;
-
-// --- Validation Context ---
-#define WAH_MAX_CONTROL_DEPTH 256
-typedef struct {
-    wah_opcode_t opcode;
-    uint32_t type_stack_sp; // Type stack pointer at the start of the block
-    wah_func_type_t block_type; // For if/block/loop
-    bool else_found; // For if blocks
-    bool is_unreachable; // True if this control frame is currently unreachable
-    uint32_t stack_height; // Stack height at the beginning of the block
-} wah_validation_control_frame_t;
-
-typedef struct {
-    wah_type_stack_t type_stack;
-    const wah_func_type_t *func_type; // Type of the function being validated
-    const wah_module_t *module; // Reference to the module for global/function lookups
-    uint32_t total_locals; // Total number of locals (params + declared locals)
-    uint32_t current_stack_depth; // Current stack depth during validation
-    uint32_t max_stack_depth; // Maximum stack depth seen during validation
-    bool is_unreachable; // True if the current code path is unreachable
-
-    // Control flow validation stack
-    wah_validation_control_frame_t control_stack[WAH_MAX_CONTROL_DEPTH];
-    uint32_t control_sp;
-} wah_validation_context_t;
-
 // --- Parser Functions ---
 static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, uint16_t *opcode_val);
-
-wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah_module_t *module);
-
-// Internal section parsing functions
-static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_function_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_start_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_datacount_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-static wah_error_t wah_parse_custom_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-
-// Global array of section handlers, indexed by the section ID
-static const struct wah_section_handler_s {
-    int8_t order; // Expected order of the section (0 for custom, 1 for Type, etc.)
-    wah_error_t (*parser_func)(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
-} wah_section_handlers[] = {
-    [0]  = { .order = 0,  .parser_func = wah_parse_custom_section },
-    [1]  = { .order = 1,  .parser_func = wah_parse_type_section },
-    [2]  = { .order = 2,  .parser_func = wah_parse_import_section },
-    [3]  = { .order = 3,  .parser_func = wah_parse_function_section },
-    [4]  = { .order = 4,  .parser_func = wah_parse_table_section },
-    [5]  = { .order = 5,  .parser_func = wah_parse_memory_section },
-    [6]  = { .order = 6,  .parser_func = wah_parse_global_section },
-    [7]  = { .order = 7,  .parser_func = wah_parse_export_section },
-    [8]  = { .order = 8,  .parser_func = wah_parse_start_section },
-    [9]  = { .order = 9,  .parser_func = wah_parse_element_section },
-    [12] = { .order = 10, .parser_func = wah_parse_datacount_section },
-    [10] = { .order = 11, .parser_func = wah_parse_code_section },
-    [11] = { .order = 12, .parser_func = wah_parse_data_section },
-};
-
-// Creates and initializes an execution context.
-wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module);
-
-// Destroys and frees resources of an execution context.
-void wah_exec_context_destroy(wah_exec_context_t *exec_ctx);
-
-// The main entry point to call a WebAssembly function.
-wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
 
 // The core interpreter loop (internal).
 static wah_error_t wah_run_interpreter(wah_exec_context_t *exec_ctx);
@@ -524,20 +606,6 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 // Pre-parsing functions
 static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_idx, const uint8_t *code, uint32_t code_size, wah_parsed_code_t *parsed_code);
 static void wah_free_parsed_code(wah_parsed_code_t *parsed_code);
-
-// --- Module Cleanup ---
-void wah_free_module(wah_module_t *module);
-
-#ifdef WAH_IMPLEMENTATION
-
-#include <string.h> // For memcpy, memset
-#include <stdlib.h> // For malloc, free
-#include <assert.h> // For assert
-#include <stdint.h> // For INT32_MIN, INT32_MAX
-#include <math.h> // For floating-point functions
-#if defined(_MSC_VER)
-#include <intrin.h> // For MSVC intrinsics
-#endif
 
 // WebAssembly canonical NaN bit patterns
 #define WASM_F32_CANONICAL_NAN_BITS 0x7fc00000U
@@ -795,113 +863,6 @@ DEFINE_TRUNC_F2I(32, float,  i64,  int64_t,  (float)INT64_MIN,  (float) INT64_MA
 DEFINE_TRUNC_F2I(32, float,  u64, uint64_t,                 0,  (float)UINT64_MAX + 1.0f, truncf)
 DEFINE_TRUNC_F2I(64, double, i64,  int64_t, (double)INT64_MIN, (double) INT64_MAX + 1.0,  trunc)
 DEFINE_TRUNC_F2I(64, double, u64, uint64_t,                 0, (double)UINT64_MAX + 1.0,  trunc)
-
-// --- Helper Macros ---
-#define WAH_CHECK(expr) do { \
-    wah_error_t _err = (expr); \
-    if (_err != WAH_OK) { WAH_LOG("WAH_CHECK(%s) failed due to: %s", #expr, wah_strerror(_err)); return _err; } \
-} while(0)
-
-#define WAH_CHECK_GOTO(expr, label) do { \
-    err = (expr); \
-    if (err != WAH_OK) { WAH_LOG("WAH_CHECK_GOTO(%s, %s) failed due to: %s", #expr, #label, wah_strerror(err)); goto label; } \
-} while(0)
-
-#define WAH_ENSURE(cond, error) do { \
-    if (!(cond)) { WAH_LOG("WAH_ENSURE(%s, %s) failed", #cond, #error); return (error); } \
-} while(0)
-
-#define WAH_ENSURE_GOTO(cond, error, label) do { \
-    if (!(cond)) { err = (error); WAH_LOG("WAH_ENSURE_GOTO(%s, %s, %s) failed", #cond, #error, #label); goto label; } \
-} while(0)
-
-// --- Safe Memory Allocation ---
-static inline wah_error_t wah_malloc(size_t count, size_t elemsize, void** out_ptr) {
-    *out_ptr = NULL;
-    if (count == 0) {
-        return WAH_OK;
-    }
-    WAH_ENSURE(elemsize == 0 || count <= SIZE_MAX / elemsize, WAH_ERROR_OUT_OF_MEMORY);
-    size_t total_size = count * elemsize;
-    *out_ptr = malloc(total_size);
-    WAH_ENSURE(*out_ptr, WAH_ERROR_OUT_OF_MEMORY);
-    return WAH_OK;
-}
-
-static inline wah_error_t wah_realloc(size_t count, size_t elemsize, void** p_ptr) {
-    if (count == 0) {
-        free(*p_ptr);
-        *p_ptr = NULL;
-        return WAH_OK;
-    }
-    WAH_ENSURE(elemsize == 0 || count <= SIZE_MAX / elemsize, WAH_ERROR_OUT_OF_MEMORY);
-    size_t total_size = count * elemsize;
-    void* new_ptr = realloc(*p_ptr, total_size);
-    WAH_ENSURE(new_ptr, WAH_ERROR_OUT_OF_MEMORY);
-    *p_ptr = new_ptr;
-    return WAH_OK;
-}
-
-#define WAH_MALLOC_ARRAY(ptr, count) \
-    do { \
-        void *_alloc_ptr; \
-        wah_error_t _alloc_err = wah_malloc((count), sizeof(*(ptr)), &_alloc_ptr); \
-        if (_alloc_err != WAH_OK) { \
-            WAH_LOG("WAH_MALLOC_ARRAY(%s, %s) failed due to OOM", #ptr, #count); \
-            return _alloc_err; \
-        } \
-        (ptr) = _alloc_ptr; \
-    } while (0)
-
-#define WAH_REALLOC_ARRAY(ptr, count) \
-    do { \
-        void *_alloc_ptr = (ptr); \
-        wah_error_t _alloc_err = wah_realloc((count), sizeof(*(ptr)), &_alloc_ptr); \
-        if (_alloc_err != WAH_OK) { \
-            WAH_LOG("WAH_REALLOC_ARRAY(%s, %s) failed due to OOM", #ptr, #count); \
-            return _alloc_err; \
-        } \
-        (ptr) = _alloc_ptr; \
-    } while (0)
-
-#define WAH_MALLOC_ARRAY_GOTO(ptr, count, label) \
-    do { \
-        void* _alloc_ptr; \
-        err = wah_malloc((count), sizeof(*(ptr)), &_alloc_ptr); \
-        if (err != WAH_OK) { \
-            WAH_LOG("WAH_MALLOC_ARRAY_GOTO(%s, %s, %s) failed due to OOM", #ptr, #count, #label); \
-            goto label; \
-        } \
-        (ptr) = _alloc_ptr; \
-    } while (0)
-
-#define WAH_REALLOC_ARRAY_GOTO(ptr, count, label) \
-    do { \
-        void* _alloc_ptr = ptr; \
-        err = wah_realloc((count), sizeof(*(ptr)), &_alloc_ptr); \
-        if (err != WAH_OK) { \
-            WAH_LOG("WAH_REALLOC_ARRAY_GOTO(%s, %s, %s) failed due to OOM", #ptr, #count, #label); \
-            goto label; \
-        } \
-        (ptr) = _alloc_ptr; \
-    } while (0)
-
-const char *wah_strerror(wah_error_t err) {
-    switch (err) {
-        case WAH_OK: return "Success";
-        case WAH_ERROR_INVALID_MAGIC_NUMBER: return "Invalid WASM magic number";
-        case WAH_ERROR_INVALID_VERSION: return "Invalid WASM version";
-        case WAH_ERROR_UNEXPECTED_EOF: return "Unexpected end of file";
-        case WAH_ERROR_UNKNOWN_SECTION: return "Unknown section or opcode";
-        case WAH_ERROR_TOO_LARGE: return "exceeding implementation limits (or value too large)";
-        case WAH_ERROR_OUT_OF_MEMORY: return "Out of memory";
-        case WAH_ERROR_VALIDATION_FAILED: return "Validation failed";
-        case WAH_ERROR_TRAP: return "Runtime trap";
-        case WAH_ERROR_CALL_STACK_OVERFLOW: return "Call stack overflow";
-        case WAH_ERROR_MEMORY_OUT_OF_BOUNDS: return "Memory access out of bounds";
-        default: return "Unknown error";
-    }
-}
 
 static inline wah_error_t wah_type_stack_push(wah_type_stack_t *stack, wah_val_type_t type) {
     WAH_ENSURE(stack->sp < WAH_MAX_TYPE_STACK_SIZE, WAH_ERROR_VALIDATION_FAILED);
@@ -2228,6 +2189,26 @@ static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, ui
     }
     return WAH_OK;
 }
+
+// Global array of section handlers, indexed by the section ID
+static const struct wah_section_handler_s {
+    int8_t order; // Expected order of the section (0 for custom, 1 for Type, etc.)
+    wah_error_t (*parser_func)(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module);
+} wah_section_handlers[] = {
+    [0]  = { .order = 0,  .parser_func = wah_parse_custom_section },
+    [1]  = { .order = 1,  .parser_func = wah_parse_type_section },
+    [2]  = { .order = 2,  .parser_func = wah_parse_import_section },
+    [3]  = { .order = 3,  .parser_func = wah_parse_function_section },
+    [4]  = { .order = 4,  .parser_func = wah_parse_table_section },
+    [5]  = { .order = 5,  .parser_func = wah_parse_memory_section },
+    [6]  = { .order = 6,  .parser_func = wah_parse_global_section },
+    [7]  = { .order = 7,  .parser_func = wah_parse_export_section },
+    [8]  = { .order = 8,  .parser_func = wah_parse_start_section },
+    [9]  = { .order = 9,  .parser_func = wah_parse_element_section },
+    [12] = { .order = 10, .parser_func = wah_parse_datacount_section },
+    [10] = { .order = 11, .parser_func = wah_parse_code_section },
+    [11] = { .order = 12, .parser_func = wah_parse_data_section },
+};
 
 wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah_module_t *module) {
     wah_error_t err = WAH_OK;
