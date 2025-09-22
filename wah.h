@@ -1694,6 +1694,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
 static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     wah_error_t err = WAH_OK;
+    wah_validation_context_t vctx;
+    memset(&vctx, 0, sizeof(wah_validation_context_t));
+
     uint32_t count;
     WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &count), cleanup);
     if (count != module->function_count) {
@@ -1741,7 +1744,6 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         // --- Validation Pass for Code Body ---
         const wah_func_type_t *func_type = &module->types[module->function_type_indices[i]];
         
-        wah_validation_context_t vctx;
         memset(&vctx, 0, sizeof(wah_validation_context_t));
         vctx.is_unreachable = false; // Functions start in a reachable state
         vctx.module = module;
@@ -1791,6 +1793,13 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
 cleanup:
     if (err != WAH_OK) {
+        // Free memory allocated for control frames during validation
+        for (int32_t j = vctx.control_sp - 1; j >= 0; --j) {
+            wah_validation_control_frame_t* frame = &vctx.control_stack[j];
+            free(frame->block_type.param_types);
+            free(frame->block_type.result_types);
+        }
+
         if (module->code_bodies) {
             for (uint32_t i = 0; i < module->code_count; ++i) {
                 free(module->code_bodies[i].local_types);
@@ -2417,12 +2426,12 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables, module->table_count, cleanup);
         memset(exec_ctx->tables, 0, sizeof(wah_value_t*) * module->table_count);
 
-        for (uint32_t i = 0; i < module->table_count; ++i) {
+        exec_ctx->table_count = module->table_count;
+        for (uint32_t i = 0; i < exec_ctx->table_count; ++i) {
             uint32_t min_elements = module->tables[i].min_elements;
             WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables[i], min_elements, cleanup);
             memset(exec_ctx->tables[i], 0, sizeof(wah_value_t) * min_elements); // Initialize to null (0)
         }
-        exec_ctx->table_count = module->table_count;
 
         // Initialize tables with element segments
         for (uint32_t i = 0; i < module->element_segment_count; ++i) {
