@@ -1842,7 +1842,8 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
     for (uint32_t i = 0; i < count; ++i) {
         // Global Type
         if (*ptr >= section_end) return WAH_ERROR_UNEXPECTED_EOF;
-        module->globals[i].type = (wah_val_type_t)*(*ptr)++;
+        wah_val_type_t global_declared_type = (wah_val_type_t)*(*ptr)++;
+        module->globals[i].type = global_declared_type;
 
         // Mutability
         if (*ptr >= section_end) return WAH_ERROR_UNEXPECTED_EOF;
@@ -1853,24 +1854,28 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
         wah_opcode_t opcode = (wah_opcode_t)*(*ptr)++;
         switch (opcode) {
             case WAH_OP_I32_CONST: {
+                if (global_declared_type != WAH_VAL_TYPE_I32) return WAH_ERROR_VALIDATION_FAILED;
                 int32_t val;
                 WAH_CHECK(wah_decode_sleb128_32(ptr, section_end, &val));
                 module->globals[i].initial_value.i32 = val;
                 break;
             }
             case WAH_OP_I64_CONST: {
+                if (global_declared_type != WAH_VAL_TYPE_I64) return WAH_ERROR_VALIDATION_FAILED;
                 int64_t val;
                 WAH_CHECK(wah_decode_sleb128_64(ptr, section_end, &val));
                 module->globals[i].initial_value.i64 = val;
                 break;
             }
             case WAH_OP_F32_CONST: {
+                if (global_declared_type != WAH_VAL_TYPE_F32) return WAH_ERROR_VALIDATION_FAILED;
                 if (*ptr + 4 > section_end) return WAH_ERROR_UNEXPECTED_EOF;
                 module->globals[i].initial_value.f32 = wah_canonicalize_f32(wah_read_f32_le(*ptr));
                 *ptr += 4;
                 break;
             }
             case WAH_OP_F64_CONST: {
+                if (global_declared_type != WAH_VAL_TYPE_F64) return WAH_ERROR_VALIDATION_FAILED;
                 if (*ptr + 8 > section_end) return WAH_ERROR_UNEXPECTED_EOF;
                 module->globals[i].initial_value.f64 = wah_canonicalize_f64(wah_read_f64_le(*ptr));
                 *ptr += 8;

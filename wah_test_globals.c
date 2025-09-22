@@ -55,6 +55,86 @@ static const uint8_t wasm_binary[] = {
     0x06, 0x00, 0x20, 0x00, 0x24, 0x01, 0x0b,
 };
 
+static const uint8_t wasm_binary_type_mismatch[] = {
+    // Magic + Version
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+
+    // Type Section (empty for this test, as we only care about global init)
+    0x01, 0x01, 0x00, // Section ID, Size, Number of Types (0)
+
+    // Global Section (id 6), size 10 (0x0a)
+    0x06, 0x09, 0x01, // Section ID, Size, Number of Globals
+    // global 0: i64, mutable, init: f32.const 1.5 (TYPE MISMATCH)
+    0x7e, // Value Type (i64) - Declared as i64
+    0x01, // Mutable
+    0x43, // Opcode for f32.const - Initialized with f32.const
+    0x00, 0x00, 0xc0, 0x3f, // IEEE 754 for 1.5f
+    0x0b, // Opcode for end
+};
+
+void test_i64_global(wah_exec_context_t* exec_ctx, wah_module_t* module) {
+    wah_value_t result;
+    wah_error_t err;
+
+    printf("Testing i64 global...\n");
+    // Get initial value
+    err = wah_call(exec_ctx, module, 0, NULL, 0, &result);
+    assert(err == WAH_OK);
+    printf("Initial i64 value: %lld\n", (long long)result.i64);
+    assert(result.i64 == 200);
+
+    // Set new value
+    wah_value_t params_i64[1];
+    params_i64[0].i64 = -5000;
+    err = wah_call(exec_ctx, module, 1, params_i64, 1, NULL);
+    assert(err == WAH_OK);
+
+    // Get new value
+    err = wah_call(exec_ctx, module, 0, NULL, 0, &result);
+    assert(err == WAH_OK);
+    printf("New i64 value: %lld\n", (long long)result.i64);
+    assert(result.i64 == -5000);
+}
+
+void test_f32_global(wah_exec_context_t* exec_ctx, wah_module_t* module) {
+    wah_value_t result;
+    wah_error_t err;
+
+    printf("Testing f32 global...\n");
+    // Get initial value
+    err = wah_call(exec_ctx, module, 2, NULL, 0, &result);
+    assert(err == WAH_OK);
+    printf("Initial f32 value: %f\n", result.f32);
+    assert(fabsf(result.f32 - 1.5f) < 1e-6);
+
+    // Set new value
+    wah_value_t params_f32[1];
+    params_f32[0].f32 = 9.99f;
+    err = wah_call(exec_ctx, module, 3, params_f32, 1, NULL);
+    assert(err == WAH_OK);
+
+    // Get new value
+    err = wah_call(exec_ctx, module, 2, NULL, 0, &result);
+    assert(err == WAH_OK);
+    printf("New f32 value: %f\n", result.f32);
+    assert(fabsf(result.f32 - 9.99f) < 1e-6);
+}
+
+void test_global_type_mismatch(void) {
+    wah_module_t module_mismatch;
+    wah_error_t err_mismatch;
+
+    printf("\n--- Running Global Type Mismatch Test ---\n");
+
+    // Parse the module - this should fail with WAH_ERROR_TYPE_MISMATCH
+    err_mismatch = wah_parse_module(wasm_binary_type_mismatch, sizeof(wasm_binary_type_mismatch), &module_mismatch);
+
+    printf("Expected error: %s, Actual error: %s\n", wah_strerror(WAH_ERROR_VALIDATION_FAILED), wah_strerror(err_mismatch));
+    assert(err_mismatch == WAH_ERROR_VALIDATION_FAILED);
+
+    printf("--- Global Type Mismatch Test Passed (as expected failure) ---\n");
+}
+
 int main(void) {
     wah_module_t module;
     wah_exec_context_t exec_ctx;
@@ -73,54 +153,16 @@ int main(void) {
     err = wah_exec_context_create(&exec_ctx, &module);
     assert(err == WAH_OK);
 
-    wah_value_t result;
+    test_i64_global(&exec_ctx, &module);
+    test_f32_global(&exec_ctx, &module);
 
-    // 1. Test i64 global
-    printf("Testing i64 global...\n");
-    // Get initial value
-    err = wah_call(&exec_ctx, &module, 0, NULL, 0, &result);
-    assert(err == WAH_OK);
-    printf("Initial i64 value: %lld\n", (long long)result.i64);
-    assert(result.i64 == 200);
-
-    // Set new value
-    wah_value_t params_i64[1];
-    params_i64[0].i64 = -5000;
-    err = wah_call(&exec_ctx, &module, 1, params_i64, 1, NULL);
-    assert(err == WAH_OK);
-
-    // Get new value
-    err = wah_call(&exec_ctx, &module, 0, NULL, 0, &result);
-    assert(err == WAH_OK);
-    printf("New i64 value: %lld\n", (long long)result.i64);
-    assert(result.i64 == -5000);
-
-    // 2. Test f32 global
-    printf("Testing f32 global...\n");
-    // Get initial value
-    err = wah_call(&exec_ctx, &module, 2, NULL, 0, &result);
-    assert(err == WAH_OK);
-    printf("Initial f32 value: %f\n", result.f32);
-    assert(fabsf(result.f32 - 1.5f) < 1e-6);
-
-    // Set new value
-    wah_value_t params_f32[1];
-    params_f32[0].f32 = 9.99f;
-    err = wah_call(&exec_ctx, &module, 3, params_f32, 1, NULL);
-    assert(err == WAH_OK);
-
-    // Get new value
-    err = wah_call(&exec_ctx, &module, 2, NULL, 0, &result);
-    assert(err == WAH_OK);
-    printf("New f32 value: %f\n", result.f32);
-    assert(fabsf(result.f32 - 9.99f) < 1e-6);
-
-
-    // Cleanup
+    // Cleanup for regular globals test
     wah_exec_context_destroy(&exec_ctx);
     wah_free_module(&module);
 
     printf("--- Globals Test Passed ---\n");
+
+    test_global_type_mismatch();
 
     return 0;
 }
