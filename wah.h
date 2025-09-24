@@ -816,15 +816,9 @@ static inline float wah_nearest_f32(float f) {
 #ifdef __clang__
     return __builtin_roundevenf(f);
 #else
-    if (isnan(f) || isinf(f) || f == 0.0f) {
-        return f;
-    }
+    if (isnan(f) || isinf(f) || f == 0.0f) return f;
     float rounded = roundf(f);
-    if (fabsf(f - rounded) == 0.5f) {
-        if (((long long)rounded % 2) != 0) {
-            return rounded - copysignf(1.0f, f);
-        }
-    }
+    if (fabsf(f - rounded) == 0.5f && ((long long)rounded % 2) != 0) return rounded - copysignf(1.0f, f);
     return rounded;
 #endif
 }
@@ -833,15 +827,9 @@ static inline double wah_nearest_f64(double d) {
 #ifdef __clang__
     return __builtin_roundeven(d);
 #else
-    if (isnan(d) || isinf(d) || d == 0.0) {
-        return d;
-    }
+    if (isnan(d) || isinf(d) || d == 0.0) return d;
     double rounded = round(d);
-    if (fabs(d - rounded) == 0.5) {
-        if (((long long)rounded % 2) != 0) {
-            return rounded - copysign(1.0, d);
-        }
-    }
+    if (fabs(d - rounded) == 0.5 && ((long long)rounded % 2) != 0) return rounded - copysign(1.0, d);
     return rounded;
 #endif
 }
@@ -909,6 +897,13 @@ static inline wah_error_t wah_validation_pop_type(wah_validation_context_t *vctx
 static inline wah_error_t wah_validate_type_match(wah_val_type_t actual, wah_val_type_t expected) {
     WAH_ENSURE(actual == expected || actual == WAH_VAL_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED);
     return WAH_OK;
+}
+
+// Helper function to pop a type from the stack and validate it against an expected type
+static inline wah_error_t wah_validation_pop_and_match_type(wah_validation_context_t *vctx, wah_val_type_t expected_type) {
+    wah_val_type_t actual_type;
+    WAH_CHECK(wah_validation_pop_type(vctx, &actual_type));
+    return wah_validate_type_match(actual_type, expected_type);
 }
 
 // Helper to read a section header
@@ -988,9 +983,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &align)); \
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &offset)); \
             WAH_ENSURE(align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
-            wah_val_type_t addr_type; \
-            WAH_CHECK(wah_validation_pop_type(vctx, &addr_type)); \
-            WAH_CHECK(wah_validate_type_match(addr_type, WAH_VAL_TYPE_I32)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); \
             return wah_validation_push_type(vctx, WAH_VAL_TYPE_##T); \
         }
 
@@ -999,11 +992,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &align)); \
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &offset)); \
             WAH_ENSURE(align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
-            wah_val_type_t val_type, addr_type; \
-            WAH_CHECK(wah_validation_pop_type(vctx, &val_type)); \
-            WAH_CHECK(wah_validation_pop_type(vctx, &addr_type)); \
-            WAH_CHECK(wah_validate_type_match(val_type, WAH_VAL_TYPE_##T)); \
-            WAH_CHECK(wah_validate_type_match(addr_type, WAH_VAL_TYPE_I32)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_##T)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); \
             return WAH_OK; \
         }
 
@@ -1039,22 +1029,16 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             uint32_t mem_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &mem_idx)); // Expect 0x00 for memory index
             WAH_ENSURE(mem_idx == 0, WAH_ERROR_VALIDATION_FAILED); // Only memory 0 supported
-            wah_val_type_t pages_to_grow_type;
-            WAH_CHECK(wah_validation_pop_type(vctx, &pages_to_grow_type)); // Pops pages to grow by (i32)
-            WAH_CHECK(wah_validate_type_match(pages_to_grow_type, WAH_VAL_TYPE_I32));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops pages to grow by (i32)
             return wah_validation_push_type(vctx, WAH_VAL_TYPE_I32); // Pushes old memory size in pages (i32)
         }
         case WAH_OP_MEMORY_FILL: {
             uint32_t mem_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &mem_idx)); // Expect 0x00 for memory index
             WAH_ENSURE(mem_idx == 0, WAH_ERROR_VALIDATION_FAILED); // Only memory 0 supported
-            wah_val_type_t size_type, val_type, dst_type;
-            WAH_CHECK(wah_validation_pop_type(vctx, &size_type)); // Pops size (i32)
-            WAH_CHECK(wah_validation_pop_type(vctx, &val_type));  // Pops value (i32)
-            WAH_CHECK(wah_validation_pop_type(vctx, &dst_type));  // Pops destination address (i32)
-            WAH_CHECK(wah_validate_type_match(size_type, WAH_VAL_TYPE_I32));
-            WAH_CHECK(wah_validate_type_match(val_type, WAH_VAL_TYPE_I32));
-            WAH_CHECK(wah_validate_type_match(dst_type, WAH_VAL_TYPE_I32));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops size (i32)
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops value (i32)
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops destination address (i32)
             return WAH_OK; // Pushes nothing
         }
         case WAH_OP_CALL: {
@@ -1065,9 +1049,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             const wah_func_type_t *called_func_type = &vctx->module->types[vctx->module->function_type_indices[func_idx]];
             // Pop parameters from type stack
             for (int32_t j = called_func_type->param_count - 1; j >= 0; --j) {
-                wah_val_type_t popped_type;
-                WAH_CHECK(wah_validation_pop_type(vctx, &popped_type));
-                WAH_CHECK(wah_validate_type_match(popped_type, called_func_type->param_types[j]));
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, called_func_type->param_types[j]));
             }
             // Push results onto type stack
             for (uint32_t j = 0; j < called_func_type->result_count; ++j) {
@@ -1089,18 +1071,14 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
 
             // Pop function index (i32) from stack
-            wah_val_type_t func_idx_type;
-            WAH_CHECK(wah_validation_pop_type(vctx, &func_idx_type));
-            WAH_CHECK(wah_validate_type_match(func_idx_type, WAH_VAL_TYPE_I32));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32));
 
             // Get the expected function type
             const wah_func_type_t *expected_func_type = &vctx->module->types[type_idx];
 
             // Pop parameters from type stack
             for (int32_t j = expected_func_type->param_count - 1; j >= 0; --j) {
-                wah_val_type_t popped_type;
-                WAH_CHECK(wah_validation_pop_type(vctx, &popped_type));
-                WAH_CHECK(wah_validate_type_match(popped_type, expected_func_type->param_types[j]));
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, expected_func_type->param_types[j]));
             }
             // Push results onto type stack
             for (uint32_t j = 0; j < expected_func_type->result_count; ++j) {
@@ -1126,14 +1104,10 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             if (opcode_val == WAH_OP_LOCAL_GET) {
                 return wah_validation_push_type(vctx, expected_type);
             } else if (opcode_val == WAH_OP_LOCAL_SET) {
-                wah_val_type_t popped_type;
-                WAH_CHECK(wah_validation_pop_type(vctx, &popped_type));
-                WAH_CHECK(wah_validate_type_match(popped_type, expected_type));
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, expected_type));
                 return WAH_OK;
             } else { // WAH_OP_LOCAL_TEE
-                wah_val_type_t popped_type;
-                WAH_CHECK(wah_validation_pop_type(vctx, &popped_type));
-                WAH_CHECK(wah_validate_type_match(popped_type, expected_type));
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, expected_type));
                 return wah_validation_push_type(vctx, expected_type);
             }
             break;
@@ -1151,10 +1125,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &global_idx));
             WAH_ENSURE(global_idx < vctx->module->global_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(vctx->module->globals[global_idx].is_mutable, WAH_ERROR_VALIDATION_FAILED); // Cannot set immutable global
-            wah_val_type_t global_type = vctx->module->globals[global_idx].type;
-            wah_val_type_t popped_type;
-            WAH_CHECK(wah_validation_pop_type(vctx, &popped_type));
-            WAH_CHECK(wah_validate_type_match(popped_type, global_type));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->module->globals[global_idx].type));
             return WAH_OK;
         }
 
@@ -1185,48 +1156,34 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_I##N##_DIV_S: case WAH_OP_I##N##_DIV_U: case WAH_OP_I##N##_REM_S: case WAH_OP_I##N##_REM_U: \
         case WAH_OP_I##N##_AND: case WAH_OP_I##N##_OR: case WAH_OP_I##N##_XOR: \
         case WAH_OP_I##N##_SHL: case WAH_OP_I##N##_SHR_S: case WAH_OP_I##N##_SHR_U: { \
-            wah_val_type_t type1, type2; \
-            WAH_CHECK(wah_validation_pop_type(vctx, &type1)); \
-            WAH_CHECK(wah_validation_pop_type(vctx, &type2)); \
-            WAH_CHECK(wah_validate_type_match(type1, WAH_VAL_TYPE_I##N)); \
-            WAH_CHECK(wah_validate_type_match(type2, WAH_VAL_TYPE_I##N)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I##N)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I##N)); \
             return wah_validation_push_type(vctx, WAH_VAL_TYPE_I##N); \
         } \
         case WAH_OP_I##N##_EQ: case WAH_OP_I##N##_NE: \
         case WAH_OP_I##N##_LT_S: case WAH_OP_I##N##_LT_U: case WAH_OP_I##N##_GT_S: case WAH_OP_I##N##_GT_U: \
         case WAH_OP_I##N##_LE_S: case WAH_OP_I##N##_LE_U: case WAH_OP_I##N##_GE_S: case WAH_OP_I##N##_GE_U: { \
-            wah_val_type_t type1, type2; \
-            WAH_CHECK(wah_validation_pop_type(vctx, &type1)); \
-            WAH_CHECK(wah_validation_pop_type(vctx, &type2)); \
-            WAH_CHECK(wah_validate_type_match(type1, WAH_VAL_TYPE_I##N)); \
-            WAH_CHECK(wah_validate_type_match(type2, WAH_VAL_TYPE_I##N)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I##N)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I##N)); \
             return wah_validation_push_type(vctx, WAH_VAL_TYPE_I32); /* Comparisons return i32 */ \
         } \
         \
         /* Unary i32/i64 operations */ \
         case WAH_OP_I##N##_EQZ: { \
-            wah_val_type_t type; \
-            WAH_CHECK(wah_validation_pop_type(vctx, &type)); \
-            WAH_CHECK(wah_validate_type_match(type, WAH_VAL_TYPE_I##N)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I##N)); \
             return wah_validation_push_type(vctx, WAH_VAL_TYPE_I32); \
         } \
         \
         /* Binary f32/f64 operations */ \
         case WAH_OP_F##N##_ADD: case WAH_OP_F##N##_SUB: case WAH_OP_F##N##_MUL: case WAH_OP_F##N##_DIV: { \
-            wah_val_type_t type1, type2; \
-            WAH_CHECK(wah_validation_pop_type(vctx, &type1)); \
-            WAH_CHECK(wah_validation_pop_type(vctx, &type2)); \
-            WAH_CHECK(wah_validate_type_match(type1, WAH_VAL_TYPE_F##N)); \
-            WAH_CHECK(wah_validate_type_match(type2, WAH_VAL_TYPE_F##N)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_F##N)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_F##N)); \
             return wah_validation_push_type(vctx, WAH_VAL_TYPE_F##N); \
         } \
         case WAH_OP_F##N##_EQ: case WAH_OP_F##N##_NE: \
         case WAH_OP_F##N##_LT: case WAH_OP_F##N##_GT: case WAH_OP_F##N##_LE: case WAH_OP_F##N##_GE: { \
-            wah_val_type_t type1, type2; \
-            WAH_CHECK(wah_validation_pop_type(vctx, &type1)); \
-            WAH_CHECK(wah_validation_pop_type(vctx, &type2)); \
-            WAH_CHECK(wah_validate_type_match(type1, WAH_VAL_TYPE_F##N)); \
-            WAH_CHECK(wah_validate_type_match(type2, WAH_VAL_TYPE_F##N)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_F##N)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_F##N)); \
             return wah_validation_push_type(vctx, WAH_VAL_TYPE_I32); /* Comparisons return i32 */ \
         }
 
@@ -1236,18 +1193,13 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 #undef NUM_OPS
 
 #define UNARY_OP(T) { \
-    wah_val_type_t type; \
-    WAH_CHECK(wah_validation_pop_type(vctx, &type)); \
-    WAH_CHECK(wah_validate_type_match(type, WAH_VAL_TYPE_##T)); \
+    WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_##T)); \
     return wah_validation_push_type(vctx, WAH_VAL_TYPE_##T); \
 }
 
 #define BINARY_OP(T) { \
-    wah_val_type_t type1, type2; \
-    WAH_CHECK(wah_validation_pop_type(vctx, &type1)); \
-    WAH_CHECK(wah_validation_pop_type(vctx, &type2)); \
-    WAH_CHECK(wah_validate_type_match(type1, WAH_VAL_TYPE_##T)); \
-    WAH_CHECK(wah_validate_type_match(type2, WAH_VAL_TYPE_##T)); \
+    WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_##T)); \
+    WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_##T)); \
     return wah_validation_push_type(vctx, WAH_VAL_TYPE_##T); \
 }
 
@@ -1270,9 +1222,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_F64_MIN: case WAH_OP_F64_MAX: case WAH_OP_F64_COPYSIGN: BINARY_OP(F64)
 
 #define POP_PUSH(INPUT_TYPE, OUTPUT_TYPE) { \
-    wah_val_type_t type; \
-    WAH_CHECK(wah_validation_pop_type(vctx, &type)); \
-    WAH_CHECK(wah_validate_type_match(type, WAH_VAL_TYPE_##INPUT_TYPE)); \
+    WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_##INPUT_TYPE)); \
     return wah_validation_push_type(vctx, WAH_VAL_TYPE_##OUTPUT_TYPE); \
 }
 
@@ -1305,9 +1255,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         }
 
         case WAH_OP_SELECT: {
-            wah_val_type_t c_type, b_type, a_type;
-            WAH_CHECK(wah_validation_pop_type(vctx, &c_type));
-            WAH_CHECK(wah_validate_type_match(c_type, WAH_VAL_TYPE_I32));
+            wah_val_type_t b_type, a_type;
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32));
             WAH_CHECK(wah_validation_pop_type(vctx, &b_type));
             WAH_CHECK(wah_validation_pop_type(vctx, &a_type));
             // If a_type and b_type are different, and neither is ANY, then it's an error.
@@ -1333,7 +1282,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_val_type_t cond_type;
             if (opcode_val == WAH_OP_IF) {
                 WAH_CHECK(wah_validation_pop_type(vctx, &cond_type));
-                WAH_ENSURE(cond_type == WAH_VAL_TYPE_I32, WAH_ERROR_VALIDATION_FAILED);
+                WAH_CHECK(wah_validate_type_match(cond_type, WAH_VAL_TYPE_I32));
             }
 
             int32_t block_type_val;
@@ -1385,9 +1334,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             // Pop params
             for (int32_t i = bt->param_count - 1; i >= 0; --i) {
-                wah_val_type_t param_type;
-                WAH_CHECK(wah_validation_pop_type(vctx, &param_type));
-                WAH_CHECK(wah_validate_type_match(param_type, bt->param_types[i]));
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, bt->param_types[i]));
             }
 
             frame->type_stack_sp = vctx->type_stack.sp;
@@ -1401,10 +1348,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             // Pop results of 'if' branch and verify
             for (int32_t i = frame->block_type.result_count - 1; i >= 0; --i) {
-                wah_val_type_t result_type;
-                WAH_CHECK(wah_validation_pop_type(vctx, &result_type));
                 // If the stack was unreachable, any type is fine. Otherwise, it must match.
-                WAH_CHECK(wah_validate_type_match(result_type, frame->block_type.result_types[i]));
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, frame->block_type.result_types[i]));
             }
 
             // Reset stack to the state before the 'if' block
@@ -1424,9 +1369,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                     WAH_ENSURE(vctx->type_stack.sp == 0, WAH_ERROR_VALIDATION_FAILED);
                 } else { // result_count == 1
                     WAH_ENSURE(vctx->type_stack.sp == 1, WAH_ERROR_VALIDATION_FAILED);
-                    wah_val_type_t result_type;
-                    WAH_CHECK(wah_validation_pop_type(vctx, &result_type));
-                    WAH_CHECK(wah_validate_type_match(result_type, vctx->func_type->result_types[0]));
+                    WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->func_type->result_types[0]));
                 }
                 // Reset unreachable state for the function's end
                 vctx->is_unreachable = false;
@@ -1437,9 +1380,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             // Pop results from the executed branch and verify
             for (int32_t i = frame->block_type.result_count - 1; i >= 0; --i) {
-                wah_val_type_t result_type;
-                WAH_CHECK(wah_validation_pop_type(vctx, &result_type));
-                WAH_CHECK(wah_validate_type_match(result_type, frame->block_type.result_types[i]));
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, frame->block_type.result_types[i]));
             }
 
             // Reset stack to the state before the block
@@ -1475,9 +1416,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             // Pop the expected result types of the target block from the current stack
             // The stack must contain these values for the branch to be valid.
             for (int32_t i = target_frame->block_type.result_count - 1; i >= 0; --i) {
-                wah_val_type_t actual_type;
-                WAH_CHECK(wah_validation_pop_type(vctx, &actual_type));
-                WAH_CHECK(wah_validate_type_match(actual_type, target_frame->block_type.result_types[i]));
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, target_frame->block_type.result_types[i]));
             }
 
             // Discard any remaining values on the stack above the target frame's stack height
@@ -1496,9 +1435,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(label_idx < vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
 
             // Pop condition (i32) from stack for br_if
-            wah_val_type_t cond_type;
-            WAH_CHECK(wah_validation_pop_type(vctx, &cond_type));
-            WAH_CHECK(wah_validate_type_match(cond_type, WAH_VAL_TYPE_I32));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32));
 
             // If the current path is unreachable, the stack is polymorphic, so type checks are trivial.
             // We only need to ensure the conceptual stack height is maintained.
@@ -1544,9 +1481,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE_GOTO(label_indices[num_targets] < vctx->control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
 
             // Pop index (i32) from stack
-            wah_val_type_t index_type;
-            WAH_CHECK_GOTO(wah_validation_pop_type(vctx, &index_type), cleanup_br_table);
-            WAH_CHECK_GOTO(wah_validate_type_match(index_type, WAH_VAL_TYPE_I32), cleanup_br_table);
+            WAH_CHECK_GOTO(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32), cleanup_br_table);
 
             // Get the block type of the default target as the reference
             wah_validation_control_frame_t *default_target_frame = &vctx->control_stack[vctx->control_sp - 1 - label_indices[num_targets]];
@@ -1567,9 +1502,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             // Pop the expected result types of the target block from the current stack
             // The stack must contain these values for the branch to be valid.
             for (int32_t i = expected_block_type->result_count - 1; i >= 0; --i) {
-                wah_val_type_t actual_type;
-                WAH_CHECK_GOTO(wah_validation_pop_type(vctx, &actual_type), cleanup_br_table);
-                WAH_CHECK_GOTO(wah_validate_type_match(actual_type, expected_block_type->result_types[i]), cleanup_br_table);
+                WAH_CHECK_GOTO(wah_validation_pop_and_match_type(vctx, expected_block_type->result_types[i]), cleanup_br_table);
             }
 
             // Discard any remaining values on the stack above the target frame's stack height
@@ -1588,9 +1521,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_RETURN:
             // Pop the function's result types from the stack
             for (int32_t j = vctx->func_type->result_count - 1; j >= 0; --j) {
-                wah_val_type_t popped_type;
-                WAH_CHECK(wah_validation_pop_type(vctx, &popped_type));
-                WAH_CHECK(wah_validate_type_match(popped_type, vctx->func_type->result_types[j]));
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->func_type->result_types[j]));
             }
             vctx->is_unreachable = true; // After return, the current path becomes unreachable
             return WAH_OK;
@@ -1671,9 +1602,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
                     } else { // result_count == 1
                         // If unreachable, the stack is polymorphic, so we don't strictly check sp.
                         // We still pop to ensure the conceptual stack height is correct.
-                        wah_val_type_t result_type;
-                        WAH_CHECK_GOTO(wah_validation_pop_type(&vctx, &result_type), cleanup);
-                        WAH_CHECK_GOTO(wah_validate_type_match(result_type, vctx.func_type->result_types[0]), cleanup);
+                        WAH_CHECK_GOTO(wah_validation_pop_and_match_type(&vctx, vctx.func_type->result_types[0]), cleanup);
                     }
                     break; // End of validation loop
                 }

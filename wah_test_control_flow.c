@@ -916,6 +916,50 @@ static void test_unreachable_drop_br_underflow_fail() {
     wah_free_module(&module);
 }
 
+// Function: (func (result i32) (unreachable) (if (result i32) (i32.const 1) (else) (i32.const 0) end))
+// This should fail validation because the if expects an i32 on the stack, but unreachable leaves the stack in a bottom state.
+// The current bug is that it fails validation, but it should pass.
+static const uint8_t unreachable_if_fail_wasm[] = {
+    0x00, 0x61, 0x73, 0x6d, // WASM magic
+    0x01, 0x00, 0x00, 0x00, // version
+
+    // Type section
+    0x01, 0x05, 0x01,       // section 1, size 5, 1 type
+    0x60, 0x00, 0x01, 0x7f, // func type: 0 params, 1 result (i32)
+
+    // Function section
+    0x03, 0x02, 0x01, 0x00, // section 3, size 2, 1 func, type 0
+
+    // Export section
+    0x07, 0x08, 0x01,       // section 7, size 8, 1 export
+    0x04, 0x74, 0x65, 0x73, 0x74, // "test"
+    0x00, 0x00,             // func 0
+
+    // Code section
+    0x0a, 0x0d, 0x01,       // section 10, size 13, 1 body
+    0x0b, 0x00,             // body size 11, 0 locals
+
+    // Function body: unreachable if (result i32) i32.const 1 else i32.const 0 end
+    0x00,                   // unreachable
+    0x04, 0x7f,             // if (result i32)
+    0x41, 0x01,             //   i32.const 1
+    0x05,                   // else
+    0x41, 0x00,             //   i32.const 0
+    0x0b,                   // end if
+    0x0b                    // end function
+};
+
+static void test_unreachable_if_validation() {
+    printf("Testing unreachable followed by if validation...\n");
+    wah_module_t module;
+    wah_error_t err;
+
+    err = wah_parse_module(unreachable_if_fail_wasm, sizeof(unreachable_if_fail_wasm), &module);
+    assert(err == WAH_OK);
+    printf("  - Unreachable followed by if (pass) - Validation passed as expected\n");
+    wah_free_module(&module);
+}
+
 int main() {
     printf("=== Control Flow Tests ===\n");
     test_simple_block();
@@ -928,6 +972,7 @@ int main() {
     test_br_table_type_consistency();
     test_block_type_with_params_pass();
     test_unreachable_drop_br_underflow_fail();
+    test_unreachable_if_validation();
     printf("=== Control Flow Tests Complete ===\n");
     return 0;
 }
