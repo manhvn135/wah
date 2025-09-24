@@ -280,7 +280,19 @@ typedef enum {
     WAH_OP_I32_STORE = 0x36, WAH_OP_I64_STORE = 0x37, WAH_OP_F32_STORE = 0x38, WAH_OP_F64_STORE = 0x39,
     WAH_OP_I32_STORE8 = 0x3A, WAH_OP_I32_STORE16 = 0x3B,
     WAH_OP_I64_STORE8 = 0x3C, WAH_OP_I64_STORE16 = 0x3D, WAH_OP_I64_STORE32 = 0x3E,
-    WAH_OP_V128_LOAD = 0xD000, WAH_OP_V128_STORE = 0xD00B,
+
+    // Vector Memory Operators
+    WAH_OP_V128_LOAD = 0xD000,
+    WAH_OP_V128_LOAD8X8_S = 0xD001, WAH_OP_V128_LOAD8X8_U = 0xD002,
+    WAH_OP_V128_LOAD16X4_S = 0xD003, WAH_OP_V128_LOAD16X4_U = 0xD004,
+    WAH_OP_V128_LOAD32X2_S = 0xD005, WAH_OP_V128_LOAD32X2_U = 0xD006,
+    WAH_OP_V128_LOAD8_SPLAT = 0xD007, WAH_OP_V128_LOAD16_SPLAT = 0xD008,
+    WAH_OP_V128_LOAD32_SPLAT = 0xD009, WAH_OP_V128_LOAD64_SPLAT = 0xD00A,
+    WAH_OP_V128_LOAD32_ZERO = 0xD05C, WAH_OP_V128_LOAD64_ZERO = 0xD05D,
+    WAH_OP_V128_LOAD8_LANE = 0xD054, WAH_OP_V128_LOAD16_LANE = 0xD055,
+    WAH_OP_V128_LOAD32_LANE = 0xD056, WAH_OP_V128_LOAD64_LANE = 0xD057,
+    WAH_OP_V128_STORE = 0xD00B,
+
     WAH_OP_MEMORY_SIZE = 0x3F, WAH_OP_MEMORY_GROW = 0x40,
     WAH_OP_MEMORY_INIT = 0xC008, WAH_OP_MEMORY_COPY = 0xC00A, WAH_OP_MEMORY_FILL = 0xC00B,
 
@@ -1210,6 +1222,18 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             return WAH_OK; \
         }
 
+#define LOAD_V128_LANE_OP(max_lg_align) { \
+            uint32_t align, offset, lane_idx; \
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &align)); \
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &offset)); \
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &lane_idx)); \
+            WAH_ENSURE(align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
+            WAH_ENSURE(lane_idx < (16 >> max_lg_align), WAH_ERROR_VALIDATION_FAILED); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128)); \
+            return wah_validation_push_type(vctx, WAH_TYPE_V128); \
+        }
+
         case WAH_OP_I32_LOAD: LOAD_OP(I32, 2)
         case WAH_OP_I64_LOAD: LOAD_OP(I64, 3)
         case WAH_OP_F32_LOAD: LOAD_OP(F32, 2)
@@ -1229,10 +1253,25 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_I64_STORE16: STORE_OP(I64, 1)
         case WAH_OP_I64_STORE32: STORE_OP(I64, 2)
         case WAH_OP_V128_LOAD: LOAD_OP(V128, 4)
+        case WAH_OP_V128_LOAD8X8_S: case WAH_OP_V128_LOAD8X8_U: LOAD_OP(V128, 3)
+        case WAH_OP_V128_LOAD16X4_S: case WAH_OP_V128_LOAD16X4_U: LOAD_OP(V128, 3)
+        case WAH_OP_V128_LOAD32X2_S: case WAH_OP_V128_LOAD32X2_U: LOAD_OP(V128, 3)
+        case WAH_OP_V128_LOAD8_SPLAT: LOAD_OP(V128, 0)
+        case WAH_OP_V128_LOAD16_SPLAT: LOAD_OP(V128, 1)
+        case WAH_OP_V128_LOAD32_SPLAT: LOAD_OP(V128, 2)
+        case WAH_OP_V128_LOAD64_SPLAT: LOAD_OP(V128, 3)
+        case WAH_OP_V128_LOAD32_ZERO: LOAD_OP(V128, 2)
+        case WAH_OP_V128_LOAD64_ZERO: LOAD_OP(V128, 3)
         case WAH_OP_V128_STORE: STORE_OP(V128, 4)
+
+        case WAH_OP_V128_LOAD8_LANE: LOAD_V128_LANE_OP(0)
+        case WAH_OP_V128_LOAD16_LANE: LOAD_V128_LANE_OP(1)
+        case WAH_OP_V128_LOAD32_LANE: LOAD_V128_LANE_OP(2)
+        case WAH_OP_V128_LOAD64_LANE: LOAD_V128_LANE_OP(3)
 
 #undef LOAD_OP
 #undef STORE_OP
+#undef LOAD_V128_LANE_OP
 
         case WAH_OP_MEMORY_SIZE: {
             uint32_t mem_idx;
@@ -2336,11 +2375,26 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             case WAH_OP_I64_LOAD32_S: case WAH_OP_I64_LOAD32_U:
             case WAH_OP_I32_STORE: case WAH_OP_I64_STORE: case WAH_OP_F32_STORE: case WAH_OP_F64_STORE:
             case WAH_OP_I32_STORE8: case WAH_OP_I32_STORE16: case WAH_OP_I64_STORE8: case WAH_OP_I64_STORE16: case WAH_OP_I64_STORE32:
-            case WAH_OP_V128_LOAD: case WAH_OP_V128_STORE: {
+            case WAH_OP_V128_LOAD: case WAH_OP_V128_STORE:
+            case WAH_OP_V128_LOAD8X8_S: case WAH_OP_V128_LOAD8X8_U:
+            case WAH_OP_V128_LOAD16X4_S: case WAH_OP_V128_LOAD16X4_U:
+            case WAH_OP_V128_LOAD32X2_S: case WAH_OP_V128_LOAD32X2_U:
+            case WAH_OP_V128_LOAD8_SPLAT: case WAH_OP_V128_LOAD16_SPLAT:
+            case WAH_OP_V128_LOAD32_SPLAT: case WAH_OP_V128_LOAD64_SPLAT:
+            case WAH_OP_V128_LOAD32_ZERO: case WAH_OP_V128_LOAD64_ZERO: {
                 uint32_t a, o;
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &o), cleanup);
                 preparsed_instr_size += sizeof(uint32_t); // For offset (ignore align)
+                break;
+            }
+            case WAH_OP_V128_LOAD8_LANE: case WAH_OP_V128_LOAD16_LANE:
+            case WAH_OP_V128_LOAD32_LANE: case WAH_OP_V128_LOAD64_LANE: {
+                uint32_t a, o, l;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &o), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &l), cleanup);
+                preparsed_instr_size += sizeof(uint32_t) * 2; // For offset and lane_idx
                 break;
             }
             case WAH_OP_MEMORY_SIZE: case WAH_OP_MEMORY_GROW: case WAH_OP_MEMORY_FILL: {
@@ -2477,11 +2531,29 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             case WAH_OP_I64_LOAD32_S: case WAH_OP_I64_LOAD32_U:
             case WAH_OP_I32_STORE: case WAH_OP_I64_STORE: case WAH_OP_F32_STORE: case WAH_OP_F64_STORE:
             case WAH_OP_I32_STORE8: case WAH_OP_I32_STORE16: case WAH_OP_I64_STORE8: case WAH_OP_I64_STORE16: case WAH_OP_I64_STORE32:
-            case WAH_OP_V128_LOAD: case WAH_OP_V128_STORE: {
+            case WAH_OP_V128_LOAD: case WAH_OP_V128_STORE:
+            case WAH_OP_V128_LOAD8X8_S: case WAH_OP_V128_LOAD8X8_U:
+            case WAH_OP_V128_LOAD16X4_S: case WAH_OP_V128_LOAD16X4_U:
+            case WAH_OP_V128_LOAD32X2_S: case WAH_OP_V128_LOAD32X2_U:
+            case WAH_OP_V128_LOAD8_SPLAT: case WAH_OP_V128_LOAD16_SPLAT:
+            case WAH_OP_V128_LOAD32_SPLAT: case WAH_OP_V128_LOAD64_SPLAT:
+            case WAH_OP_V128_LOAD32_ZERO: case WAH_OP_V128_LOAD64_ZERO: {
                 uint32_t a, o;
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &o), cleanup);
                 wah_write_u32_le(write_ptr, o);
+                write_ptr += sizeof(uint32_t);
+                break;
+            }
+            case WAH_OP_V128_LOAD8_LANE: case WAH_OP_V128_LOAD16_LANE:
+            case WAH_OP_V128_LOAD32_LANE: case WAH_OP_V128_LOAD64_LANE: {
+                uint32_t a, o, l;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &o), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &l), cleanup);
+                wah_write_u32_le(write_ptr, o);
+                write_ptr += sizeof(uint32_t);
+                wah_write_u32_le(write_ptr, l);
                 write_ptr += sizeof(uint32_t);
                 break;
             }
@@ -3305,15 +3377,84 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             case WAH_OP_UNREACHABLE: err = WAH_ERROR_TRAP; goto cleanup;
 
             // --- Vector instructions ---
+#define V128_LOAD_COMMON(read_size) \
+                uint32_t offset = wah_read_u32_le(bytecode_ip); \
+                bytecode_ip += sizeof(uint32_t); \
+                uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32; \
+                uint32_t effective_addr = addr + offset; \
+                WAH_ENSURE_GOTO(effective_addr + (read_size) <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup)
+
+#define V128_LOAD_HALF_OP(N, elem_ty, cast) { \
+                V128_LOAD_COMMON(8); \
+                wah_v128_t *v = &ctx->value_stack[ctx->sp++].v128; \
+                for (int i = 0; i < 64/N; ++i) { \
+                    v->elem_ty[i] = cast(wah_read_u##N##_le(ctx->memory_base + effective_addr + i * (N/8))); \
+                } \
+                break; \
+            }
+
+#define V128_LOAD_SPLAT_OP(N) { \
+                V128_LOAD_COMMON(N/8); \
+                wah_v128_t *v = &ctx->value_stack[ctx->sp++].v128; \
+                uint##N##_t val = wah_read_u##N##_le(ctx->memory_base + effective_addr); \
+                for (int i = 0; i < 128/N; ++i) v->u##N[i] = val; \
+                break; \
+            }
+
+#define V128_LOAD_LANE_OP(N) { \
+                uint32_t offset = wah_read_u32_le(bytecode_ip); \
+                bytecode_ip += sizeof(uint32_t); \
+                uint32_t lane_idx = wah_read_u32_le(bytecode_ip); \
+                bytecode_ip += sizeof(uint32_t); \
+                wah_v128_t val = ctx->value_stack[--ctx->sp].v128; /* Existing vector */ \
+                uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32; \
+                uint32_t effective_addr = addr + offset; \
+                WAH_ENSURE_GOTO(effective_addr + N/8 <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup); \
+                WAH_ENSURE_GOTO(lane_idx < 128/N, WAH_ERROR_TRAP, cleanup); \
+                val.u##N[lane_idx] = wah_read_u##N##_le(ctx->memory_base + effective_addr); \
+                ctx->value_stack[ctx->sp++].v128 = val; \
+                break; \
+            }
+
             case WAH_OP_V128_LOAD: {
-                uint32_t offset = wah_read_u32_le(bytecode_ip);
-                bytecode_ip += sizeof(uint32_t);
-                uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-                uint32_t effective_addr = addr + offset;
-                WAH_ENSURE_GOTO(effective_addr + sizeof(wah_v128_t) <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+                V128_LOAD_COMMON(sizeof(wah_v128_t));
                 memcpy(&ctx->value_stack[ctx->sp++].v128, ctx->memory_base + effective_addr, sizeof(wah_v128_t));
                 break;
             }
+            case WAH_OP_V128_LOAD8X8_S: V128_LOAD_HALF_OP(8, i16, (int16_t)(int8_t))
+            case WAH_OP_V128_LOAD8X8_U: V128_LOAD_HALF_OP(8, u16, (uint16_t))
+            case WAH_OP_V128_LOAD16X4_S: V128_LOAD_HALF_OP(16, i32, (int32_t)(int16_t))
+            case WAH_OP_V128_LOAD16X4_U: V128_LOAD_HALF_OP(16, u32, (uint32_t))
+            case WAH_OP_V128_LOAD32X2_S: V128_LOAD_HALF_OP(32, i64, (int64_t)(int32_t))
+            case WAH_OP_V128_LOAD32X2_U: V128_LOAD_HALF_OP(32, u64, (uint64_t))
+            case WAH_OP_V128_LOAD8_SPLAT: V128_LOAD_SPLAT_OP(8)
+            case WAH_OP_V128_LOAD16_SPLAT: V128_LOAD_SPLAT_OP(16)
+            case WAH_OP_V128_LOAD32_SPLAT: V128_LOAD_SPLAT_OP(32)
+            case WAH_OP_V128_LOAD64_SPLAT: V128_LOAD_SPLAT_OP(64)
+            case WAH_OP_V128_LOAD32_ZERO: {
+                V128_LOAD_COMMON(4);
+                wah_v128_t *v = &ctx->value_stack[ctx->sp++].v128;
+                memset(v, 0, sizeof(wah_v128_t)); // Zero out the entire vector
+                v->u32[0] = wah_read_u32_le(ctx->memory_base + effective_addr);
+                break;
+            }
+            case WAH_OP_V128_LOAD64_ZERO: {
+                V128_LOAD_COMMON(8);
+                wah_v128_t *v = &ctx->value_stack[ctx->sp++].v128;
+                memset(v, 0, sizeof(wah_v128_t)); // Zero out the entire vector
+                v->u64[0] = wah_read_u64_le(ctx->memory_base + effective_addr);
+                break;
+            }
+            case WAH_OP_V128_LOAD8_LANE: V128_LOAD_LANE_OP(8)
+            case WAH_OP_V128_LOAD16_LANE: V128_LOAD_LANE_OP(16)
+            case WAH_OP_V128_LOAD32_LANE: V128_LOAD_LANE_OP(32)
+            case WAH_OP_V128_LOAD64_LANE: V128_LOAD_LANE_OP(64)
+
+#undef V128_LOAD_COMMON
+#undef V128_LOAD_HALF_OP
+#undef V128_LOAD_SPLAT_OP
+#undef V128_LOAD_LANE_OP
+
             case WAH_OP_V128_STORE: {
                 uint32_t offset = wah_read_u32_le(bytecode_ip);
                 bytecode_ip += sizeof(uint32_t);
