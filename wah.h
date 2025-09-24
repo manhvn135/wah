@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <assert.h>
 
 typedef enum {
     WAH_OK = 0,
@@ -49,6 +50,19 @@ typedef struct {
     wah_type_t type;
     const char *name;
     size_t name_len;
+    bool is_mutable;
+
+    // Semi-private fields:
+    union {
+        wah_value_t global_val; // For WAH_TYPE_IS_GLOBAL
+        struct { // For WAH_TYPE_IS_MEMORY
+            uint32_t min_pages, max_pages;
+        } memory;
+        struct { // For WAH_TYPE_IS_TABLE
+            wah_type_t elem_type;
+            uint32_t min_elements, max_elements;
+        } table;
+    } u;
 } wah_entry_t;
 
 typedef struct wah_module_s {
@@ -124,6 +138,51 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, u
 
 // --- Module Cleanup ---
 void wah_free_module(wah_module_t *module);
+
+wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
+
+// Accessors for wah_entry_t
+static inline int32_t wah_entry_i32(const wah_entry_t *entry) {
+    assert(entry);
+    return entry->type == WAH_TYPE_I32 ? entry->u.global_val.i32 : 0;
+}
+
+static inline int64_t wah_entry_i64(const wah_entry_t *entry) {
+    assert(entry);
+    return entry->type == WAH_TYPE_I64 ? entry->u.global_val.i64 : 0;
+}
+
+static inline float wah_entry_f32(const wah_entry_t *entry) {
+    assert(entry);
+    return entry->type == WAH_TYPE_F32 ? entry->u.global_val.f32 : 0.0f / 0.0f;
+}
+
+static inline double wah_entry_f64(const wah_entry_t *entry) {
+    assert(entry);
+    return entry->type == WAH_TYPE_F64 ? entry->u.global_val.f64 : 0.0 / 0.0;
+}
+
+static inline wah_error_t wah_entry_memory(const wah_entry_t *entry, uint32_t *min_pages, uint32_t *max_pages) {
+    if (!entry) return WAH_ERROR_MISUSE;
+    if (!min_pages) return WAH_ERROR_MISUSE;
+    if (!max_pages) return WAH_ERROR_MISUSE;
+    if (!WAH_TYPE_IS_MEMORY(entry->type)) return WAH_ERROR_MISUSE;
+    *min_pages = entry->u.memory.min_pages;
+    *max_pages = entry->u.memory.max_pages;
+    return WAH_OK;
+}
+
+static inline wah_error_t wah_entry_table(const wah_entry_t *entry, wah_type_t *elem_type, uint32_t *min_elements, uint32_t *max_elements) {
+    if (!entry) return WAH_ERROR_MISUSE;
+    if (!elem_type) return WAH_ERROR_MISUSE;
+    if (!min_elements) return WAH_ERROR_MISUSE;
+    if (!max_elements) return WAH_ERROR_MISUSE;
+    if (!WAH_TYPE_IS_TABLE(entry->type)) return WAH_ERROR_MISUSE;
+    *elem_type = entry->u.table.elem_type; // Directly assign wah_type_t
+    *min_elements = entry->u.table.min_elements;
+    *max_elements = entry->u.table.max_elements;
+    return WAH_OK;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -3246,29 +3305,30 @@ wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_
     WAH_ENSURE(idx < module->export_count, WAH_ERROR_NOT_FOUND);
 
     const wah_export_t *export_entry = &module->exports[idx];
-    out->name = export_entry->name;
-    out->name_len = export_entry->name_len;
 
+    wah_entry_id_t entry_id;
     switch (export_entry->kind) {
         case 0: // Function
-            out->type = WAH_TYPE_FUNCTION;
-            out->id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_FUNCTION, export_entry->index);
+            entry_id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_FUNCTION, export_entry->index);
             break;
         case 1: // Table
-            out->type = WAH_TYPE_TABLE;
-            out->id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_TABLE, export_entry->index);
+            entry_id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_TABLE, export_entry->index);
             break;
         case 2: // Memory
-            out->type = WAH_TYPE_MEMORY;
-            out->id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_MEMORY, export_entry->index);
+            entry_id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_MEMORY, export_entry->index);
             break;
         case 3: // Global
-            out->type = module->globals[export_entry->index].type;
-            out->id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_GLOBAL, export_entry->index);
+            entry_id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_GLOBAL, export_entry->index);
             break;
         default:
             return WAH_ERROR_VALIDATION_FAILED; // Should not happen if parsing is correct
     }
+
+    WAH_CHECK(wah_module_entry(module, entry_id, out));
+
+    out->name = export_entry->name;
+    out->name_len = export_entry->name_len;
+
     return WAH_OK;
 }
 
@@ -3298,6 +3358,7 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
     out->id = entry_id;
     out->name = NULL; // No name for non-exported entries
     out->name_len = 0;
+    out->is_mutable = false; // Default to false
 
     switch (kind) {
         case WAH_ENTRY_KIND_FUNCTION:
@@ -3307,14 +3368,32 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
         case WAH_ENTRY_KIND_TABLE:
             WAH_ENSURE(index < module->table_count, WAH_ERROR_NOT_FOUND);
             out->type = WAH_TYPE_TABLE;
+
+            // Convert wah_val_type_t to wah_type_t
+            wah_val_type_t val_elem_type = module->tables[index].elem_type;
+            switch (val_elem_type) {
+                case WAH_VAL_TYPE_I32: out->u.table.elem_type = WAH_TYPE_I32; break;
+                case WAH_VAL_TYPE_I64: out->u.table.elem_type = WAH_TYPE_I64; break;
+                case WAH_VAL_TYPE_F32: out->u.table.elem_type = WAH_TYPE_F32; break;
+                case WAH_VAL_TYPE_F64: out->u.table.elem_type = WAH_TYPE_F64; break;
+                case WAH_VAL_TYPE_FUNCREF: out->u.table.elem_type = WAH_TYPE_FUNCTION; break;
+                default: return WAH_ERROR_MISUSE; // Unknown element type
+            }
+
+            out->u.table.min_elements = module->tables[index].min_elements;
+            out->u.table.max_elements = module->tables[index].max_elements;
             break;
         case WAH_ENTRY_KIND_MEMORY:
             WAH_ENSURE(index < module->memory_count, WAH_ERROR_NOT_FOUND);
             out->type = WAH_TYPE_MEMORY;
+            out->u.memory.min_pages = module->memories[index].min_pages;
+            out->u.memory.max_pages = module->memories[index].max_pages;
             break;
         case WAH_ENTRY_KIND_GLOBAL:
             WAH_ENSURE(index < module->global_count, WAH_ERROR_NOT_FOUND);
             out->type = module->globals[index].type;
+            out->is_mutable = module->globals[index].is_mutable;
+            out->u.global_val = module->globals[index].initial_value;
             break;
         default:
             return WAH_ERROR_NOT_FOUND; // Unknown entry kind
