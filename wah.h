@@ -36,6 +36,7 @@ typedef struct wah_module_s {
     uint32_t memory_count;
     uint32_t table_count;
     uint32_t element_segment_count;
+    uint32_t data_segment_count;
 
     struct wah_func_type_s *types;
     uint32_t *function_type_indices; // Index into the types array
@@ -44,9 +45,11 @@ typedef struct wah_module_s {
     struct wah_memory_type_s *memories;
     struct wah_table_type_s *tables;
     struct wah_element_segment_s *element_segments;
+    struct wah_data_segment_s *data_segments;
 
     uint32_t start_function_idx;
     bool has_start_function;
+    bool has_data_count_section; // True if data count section was present
 } wah_module_t;
 
 typedef struct wah_exec_context_s {
@@ -146,9 +149,8 @@ typedef enum {
     WAH_OP_I32_STORE = 0x36, WAH_OP_I64_STORE = 0x37, WAH_OP_F32_STORE = 0x38, WAH_OP_F64_STORE = 0x39,
     WAH_OP_I32_STORE8 = 0x3A, WAH_OP_I32_STORE16 = 0x3B,
     WAH_OP_I64_STORE8 = 0x3C, WAH_OP_I64_STORE16 = 0x3D, WAH_OP_I64_STORE32 = 0x3E,
-    WAH_OP_MEMORY_SIZE = 0x3F,
-    WAH_OP_MEMORY_GROW = 0x40,
-    WAH_OP_MEMORY_FILL = 0xC00B,
+    WAH_OP_MEMORY_SIZE = 0x3F, WAH_OP_MEMORY_GROW = 0x40,
+    WAH_OP_MEMORY_INIT = 0xC008, WAH_OP_MEMORY_COPY = 0xC00A, WAH_OP_MEMORY_FILL = 0xC00B,
 
     // Constants
     WAH_OP_I32_CONST = 0x41, WAH_OP_I64_CONST = 0x42, WAH_OP_F32_CONST = 0x43, WAH_OP_F64_CONST = 0x44,
@@ -217,6 +219,14 @@ typedef struct wah_table_type_s {
     uint32_t min_elements;
     uint32_t max_elements; // 0 if no maximum
 } wah_table_type_t;
+
+typedef struct wah_data_segment_s {
+    uint32_t flags;
+    uint32_t memory_idx; // Only for active segments (flags & 0x02)
+    uint32_t offset;     // Result of the offset_expr (i32.const X end)
+    uint32_t data_len;
+    const uint8_t *data; // Pointer to the raw data bytes within the WASM binary
+} wah_data_segment_t;
 
 // --- WebAssembly Element Segment Structure ---
 typedef struct wah_element_segment_s {
@@ -1041,6 +1051,26 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops destination address (i32)
             return WAH_OK; // Pushes nothing
         }
+        case WAH_OP_MEMORY_INIT: {
+            uint32_t data_idx, mem_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &data_idx));
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &mem_idx));
+            WAH_ENSURE(mem_idx == 0, WAH_ERROR_VALIDATION_FAILED); // Only memory 0 supported
+            WAH_ENSURE(data_idx < vctx->module->data_segment_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops size (i32)
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops offset (i32)
+            return WAH_OK;
+        }
+        case WAH_OP_MEMORY_COPY: {
+            uint32_t dest_mem_idx, src_mem_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &dest_mem_idx));
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &src_mem_idx));
+            WAH_ENSURE(dest_mem_idx == 0 && src_mem_idx == 0, WAH_ERROR_VALIDATION_FAILED); // Only memory 0 supported
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops size (i32)
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops src offset (i32)
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops dest offset (i32)
+            return WAH_OK;
+        }
         case WAH_OP_CALL: {
             uint32_t func_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &func_idx));
@@ -1826,11 +1856,57 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
 }
 
 static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
-    return wah_parse_unimplemented_section(ptr, section_end, module);
+    uint32_t count;
+    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
+    module->data_segment_count = count;
+    if (count > 0) {
+        WAH_MALLOC_ARRAY(module->data_segments, count);
+        memset(module->data_segments, 0, sizeof(wah_data_segment_t) * count);
+
+        for (uint32_t i = 0; i < count; ++i) {
+            wah_data_segment_t *segment = &module->data_segments[i];
+
+            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->flags));
+
+            if (segment->flags == 0x00) { // Active segment, memory index 0
+                segment->memory_idx = 0;
+            } else if (segment->flags == 0x01) { // Passive segment
+                // No memory index or offset expression for passive segments
+            } else if (segment->flags == 0x02) { // Active segment, with memory index
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->memory_idx));
+                WAH_ENSURE(segment->memory_idx == 0, WAH_ERROR_VALIDATION_FAILED); // Only memory 0 supported
+            } else {
+                return WAH_ERROR_VALIDATION_FAILED; // Unknown data segment flags
+            }
+
+            if (segment->flags == 0x00 || segment->flags == 0x02) { // Active segments have offset expression
+                // Parse offset_expr (expected to be i32.const X end)
+                WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
+                wah_opcode_t opcode = (wah_opcode_t)*(*ptr)++;
+                WAH_ENSURE(opcode == WAH_OP_I32_CONST, WAH_ERROR_VALIDATION_FAILED);
+
+                int32_t offset_val;
+                WAH_CHECK(wah_decode_sleb128_32(ptr, section_end, &offset_val));
+                segment->offset = (uint32_t)offset_val;
+
+                WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
+                WAH_ENSURE(*(*ptr)++ == WAH_OP_END, WAH_ERROR_VALIDATION_FAILED);
+            }
+
+            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->data_len));
+
+            WAH_ENSURE(*ptr + segment->data_len <= section_end, WAH_ERROR_UNEXPECTED_EOF);
+            segment->data = *ptr;
+            *ptr += segment->data_len;
+        }
+    }
+    return WAH_OK;
 }
 
 static wah_error_t wah_parse_datacount_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
-    return wah_parse_unimplemented_section(ptr, section_end, module);
+    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->data_segment_count));
+    module->has_data_count_section = true;
+    return WAH_OK;
 }
 
 // Pre-parsing function to convert bytecode to optimized structure
@@ -1960,6 +2036,20 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &m), cleanup);
                 break;
             }
+            case WAH_OP_MEMORY_INIT: {
+                uint32_t data_idx, mem_idx;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &data_idx), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &mem_idx), cleanup);
+                preparsed_instr_size += sizeof(uint32_t) * 2; // For data_idx and mem_idx
+                break;
+            }
+            case WAH_OP_MEMORY_COPY: {
+                uint32_t dest_mem_idx, src_mem_idx;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &dest_mem_idx), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &src_mem_idx), cleanup);
+                preparsed_instr_size += sizeof(uint32_t) * 2; // For dest_mem_idx and src_mem_idx
+                break;
+            }
         }
         preparsed_size += preparsed_instr_size;
         ptr = instr_ptr + (ptr - instr_ptr); // This is not a bug; it's to make it clear that ptr is advanced inside the switch
@@ -2085,6 +2175,26 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &m), cleanup);
                 break;
             }
+            case WAH_OP_MEMORY_INIT: {
+                uint32_t data_idx, mem_idx;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &data_idx), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &mem_idx), cleanup);
+                wah_write_u32_le(write_ptr, data_idx);
+                write_ptr += sizeof(uint32_t);
+                wah_write_u32_le(write_ptr, mem_idx);
+                write_ptr += sizeof(uint32_t);
+                break;
+            }
+            case WAH_OP_MEMORY_COPY: {
+                uint32_t dest_mem_idx, src_mem_idx;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &dest_mem_idx), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &src_mem_idx), cleanup);
+                wah_write_u32_le(write_ptr, dest_mem_idx);
+                write_ptr += sizeof(uint32_t);
+                wah_write_u32_le(write_ptr, src_mem_idx);
+                write_ptr += sizeof(uint32_t);
+                break;
+            }
         }
         ptr = saved_ptr + (ptr - saved_ptr);
     }
@@ -2144,6 +2254,7 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
     WAH_ENSURE(wasm_binary && module && binary_size >= 8, WAH_ERROR_UNEXPECTED_EOF);
 
     memset(module, 0, sizeof(wah_module_t)); // Initialize module struct
+    module->has_data_count_section = false;
 
     const uint8_t *ptr = wasm_binary;
     const uint8_t *end = wasm_binary + binary_size;
@@ -2252,6 +2363,16 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
             for (uint32_t j = 0; j < segment->num_elems; ++j) {
                 exec_ctx->tables[segment->table_idx][segment->offset + j].i32 = (int32_t)segment->func_indices[j];
             }
+        }
+    }
+
+    // Initialize active data segments
+    for (uint32_t i = 0; i < module->data_segment_count; ++i) {
+        const wah_data_segment_t *segment = &module->data_segments[i];
+        if (segment->flags == 0x00 || segment->flags == 0x02) { // Active segments
+            WAH_ENSURE_GOTO(segment->memory_idx == 0, WAH_ERROR_VALIDATION_FAILED, cleanup); // Only memory 0 supported
+            WAH_ENSURE_GOTO((uint64_t)segment->offset + segment->data_len <= exec_ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+            memcpy(exec_ctx->memory_base + segment->offset, segment->data, segment->data_len);
         }
     }
 
@@ -2773,6 +2894,44 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 memset(ctx->memory_base + dst, val, size);
                 break;
             }
+            case WAH_OP_MEMORY_INIT: {
+                uint32_t data_idx = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
+                uint32_t mem_idx = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
+
+                WAH_ENSURE_GOTO(mem_idx == 0, WAH_ERROR_TRAP, cleanup); // Only memory 0 supported
+                WAH_ENSURE_GOTO(data_idx < ctx->module->data_segment_count, WAH_ERROR_TRAP, cleanup);
+
+                uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+                uint32_t offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+
+                const wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
+
+                WAH_ENSURE_GOTO((uint64_t)offset + size <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+                WAH_ENSURE_GOTO(size <= segment->data_len, WAH_ERROR_TRAP, cleanup); // Cannot initialize more than available data
+
+                memcpy(ctx->memory_base + offset, segment->data, size);
+                break;
+            }
+            case WAH_OP_MEMORY_COPY: {
+                uint32_t dest_mem_idx = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
+                uint32_t src_mem_idx = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
+
+                WAH_ENSURE_GOTO(dest_mem_idx == 0 && src_mem_idx == 0, WAH_ERROR_TRAP, cleanup); // Only memory 0 supported
+
+                uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+                uint32_t src = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+                uint32_t dest = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+
+                WAH_ENSURE_GOTO((uint64_t)dest + size <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+                WAH_ENSURE_GOTO((uint64_t)src + size <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+
+                memmove(ctx->memory_base + dest, ctx->memory_base + src, size);
+                break;
+            }
             case WAH_OP_DROP: { ctx->sp--; break; }
             case WAH_OP_SELECT: {
                 wah_value_t c = ctx->value_stack[--ctx->sp];
@@ -2871,6 +3030,8 @@ void wah_free_module(wah_module_t *module) {
         }
         free(module->element_segments);
     }
+
+    free(module->data_segments); // Free data segments
 
     // Reset all fields to 0/NULL
     memset(module, 0, sizeof(wah_module_t));
