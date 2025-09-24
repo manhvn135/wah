@@ -334,6 +334,19 @@ typedef enum {
     WAH_OP_F64_ADD = 0xA0, WAH_OP_F64_SUB = 0xA1, WAH_OP_F64_MUL = 0xA2, WAH_OP_F64_DIV = 0xA3,
     WAH_OP_F64_MIN = 0xA4, WAH_OP_F64_MAX = 0xA5, WAH_OP_F64_COPYSIGN = 0xA6,
 
+    // Vector Numeric Operators
+    WAH_OP_V128_NOT = 0xD04D, WAH_OP_V128_AND = 0xD04E, WAH_OP_V128_ANDNOT = 0xD04F,
+    WAH_OP_V128_OR = 0xD050, WAH_OP_V128_XOR = 0xD051,
+    WAH_OP_I8X16_ADD = 0xD06E, WAH_OP_I8X16_ADD_SAT_S = 0xD06F, WAH_OP_I8X16_ADD_SAT_U = 0xD070,
+    WAH_OP_I8X16_SUB = 0xD071, WAH_OP_I8X16_SUB_SAT_S = 0xD072, WAH_OP_I8X16_SUB_SAT_U = 0xD073,
+    WAH_OP_I16X8_ADD = 0xD08E, WAH_OP_I16X8_ADD_SAT_S = 0xD08F, WAH_OP_I16X8_ADD_SAT_U = 0xD090,
+    WAH_OP_I16X8_SUB = 0xD091, WAH_OP_I16X8_SUB_SAT_S = 0xD092, WAH_OP_I16X8_SUB_SAT_U = 0xD093,
+    WAH_OP_I16X8_MUL = 0xD095,
+    WAH_OP_I32X4_ADD = 0xD0AE, WAH_OP_I32X4_SUB = 0xD0B1, WAH_OP_I32X4_MUL = 0xD0B5,
+    WAH_OP_I64X2_ADD = 0xD0CE, WAH_OP_I64X2_SUB = 0xD0D1, WAH_OP_I64X2_MUL = 0xD0D5,
+    WAH_OP_F32X4_ADD = 0xD0E4, WAH_OP_F32X4_SUB = 0xD0E5, WAH_OP_F32X4_MUL = 0xD0E6, WAH_OP_F32X4_DIV = 0xD0E7,
+    WAH_OP_F64X2_ADD = 0xD0F0, WAH_OP_F64X2_SUB = 0xD0F1, WAH_OP_F64X2_MUL = 0xD0F2, WAH_OP_F64X2_DIV = 0xD0F3,
+
     // Conversion Operators
     WAH_OP_I32_WRAP_I64 = 0xA7,
     WAH_OP_I32_TRUNC_F32_S = 0xA8, WAH_OP_I32_TRUNC_F32_U = 0xA9,
@@ -1504,6 +1517,25 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         // Floating-Point Binary Operations
         case WAH_OP_F32_MIN: case WAH_OP_F32_MAX: case WAH_OP_F32_COPYSIGN: BINARY_OP(F32)
         case WAH_OP_F64_MIN: case WAH_OP_F64_MAX: case WAH_OP_F64_COPYSIGN: BINARY_OP(F64)
+
+        case WAH_OP_V128_NOT: {
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128));
+            return wah_validation_push_type(vctx, WAH_TYPE_V128);
+        }
+        case WAH_OP_V128_AND: case WAH_OP_V128_ANDNOT: case WAH_OP_V128_OR: case WAH_OP_V128_XOR:
+        case WAH_OP_I8X16_ADD: case WAH_OP_I8X16_ADD_SAT_S: case WAH_OP_I8X16_ADD_SAT_U:
+        case WAH_OP_I8X16_SUB: case WAH_OP_I8X16_SUB_SAT_S: case WAH_OP_I8X16_SUB_SAT_U:
+        case WAH_OP_I16X8_ADD: case WAH_OP_I16X8_ADD_SAT_S: case WAH_OP_I16X8_ADD_SAT_U:
+        case WAH_OP_I16X8_SUB: case WAH_OP_I16X8_SUB_SAT_S: case WAH_OP_I16X8_SUB_SAT_U:
+        case WAH_OP_I16X8_MUL:
+        case WAH_OP_I32X4_ADD: case WAH_OP_I32X4_SUB: case WAH_OP_I32X4_MUL:
+        case WAH_OP_I64X2_ADD: case WAH_OP_I64X2_SUB: case WAH_OP_I64X2_MUL:
+        case WAH_OP_F32X4_ADD: case WAH_OP_F32X4_SUB: case WAH_OP_F32X4_MUL: case WAH_OP_F32X4_DIV:
+        case WAH_OP_F64X2_ADD: case WAH_OP_F64X2_SUB: case WAH_OP_F64X2_MUL: case WAH_OP_F64X2_DIV: {
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128));
+            return wah_validation_push_type(vctx, WAH_TYPE_V128);
+        }
 
 #define POP_PUSH(INPUT_TYPE, OUTPUT_TYPE) { \
     WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_##INPUT_TYPE)); \
@@ -2929,6 +2961,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 bytecode_ip += sizeof(wah_v128_t);
                 break;
             }
+
             case WAH_OP_LOCAL_GET: {
                 uint32_t local_idx = wah_read_u32_le(bytecode_ip);
                 bytecode_ip += sizeof(uint32_t);
@@ -3465,6 +3498,117 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 memcpy(ctx->memory_base + effective_addr, &val, sizeof(wah_v128_t));
                 break;
             }
+
+            #define VSTACK_V128_TOP (ctx->value_stack[ctx->sp - 1].v128)
+            #define VSTACK_V128_B (ctx->value_stack[ctx->sp - 1].v128)
+            #define VSTACK_V128_A (ctx->value_stack[ctx->sp - 2].v128)
+
+#define V128_UNARY_OP(op) { VSTACK_V128_TOP = op(VSTACK_V128_TOP); break; }
+#define V128_BINARY_OP(op) { VSTACK_V128_A = op(VSTACK_V128_A, VSTACK_V128_B); ctx->sp--; break; }
+#define V128_BINARY_OP_LANE(N, op, field) { \
+                for (int i = 0; i < 128/N; ++i) { \
+                    VSTACK_V128_A.field[i] = VSTACK_V128_A.field[i] op VSTACK_V128_B.field[i]; \
+                } \
+                ctx->sp--; \
+                break; \
+            }
+#define V128_BINARY_OP_LANE_SAT_S(N, op, field, min_val, max_val) { \
+                for (int i = 0; i < 128/N; ++i) { \
+                    int64_t res = (int64_t)VSTACK_V128_A.field[i] op (int64_t)VSTACK_V128_B.field[i]; \
+                    if (res < min_val) res = min_val; \
+                    if (res > max_val) res = max_val; \
+                    VSTACK_V128_A.field[i] = (int##N##_t)res; \
+                } \
+                ctx->sp--; \
+                break; \
+            }
+#define V128_BINARY_OP_LANE_SAT_U(N, op, field, max_val) { \
+                for (int i = 0; i < 128/N; ++i) { \
+                    int64_t res = (uint64_t)VSTACK_V128_A.field[i] op (uint64_t)VSTACK_V128_B.field[i]; \
+                    if (res < 0) res = 0; \
+                    if (res > max_val) res = max_val; \
+                    VSTACK_V128_A.field[i] = (uint##N##_t)res; \
+                } \
+                ctx->sp--; \
+                break; \
+            }
+#define V128_BINARY_OP_LANE_F(N, op, field) { \
+                for (int i = 0; i < 128/N; ++i) { \
+                    VSTACK_V128_A.field[i] = VSTACK_V128_A.field[i] op VSTACK_V128_B.field[i]; \
+                } \
+                ctx->sp--; \
+                break; \
+            }
+
+            case WAH_OP_V128_NOT: {
+                wah_v128_t val = VSTACK_V128_TOP;
+                for (int i = 0; i < 16; ++i) val.u8[i] = ~val.u8[i];
+                VSTACK_V128_TOP = val;
+                break;
+            }
+            case WAH_OP_V128_AND: {
+                wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+                for (int i = 0; i < 16; ++i) a.u8[i] &= b.u8[i];
+                VSTACK_V128_A = a; ctx->sp--; break;
+            }
+            case WAH_OP_V128_ANDNOT: {
+                wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+                for (int i = 0; i < 16; ++i) a.u8[i] &= ~b.u8[i];
+                VSTACK_V128_A = a; ctx->sp--; break;
+            }
+            case WAH_OP_V128_OR: {
+                wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+                for (int i = 0; i < 16; ++i) a.u8[i] |= b.u8[i];
+                VSTACK_V128_A = a; ctx->sp--; break;
+            }
+            case WAH_OP_V128_XOR: {
+                wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+                for (int i = 0; i < 16; ++i) a.u8[i] ^= b.u8[i];
+                VSTACK_V128_A = a; ctx->sp--; break;
+            }
+
+            case WAH_OP_I8X16_ADD: V128_BINARY_OP_LANE(8, +, i8)
+            case WAH_OP_I8X16_ADD_SAT_S: V128_BINARY_OP_LANE_SAT_S(8, +, i8, -128, 127)
+            case WAH_OP_I8X16_ADD_SAT_U: V128_BINARY_OP_LANE_SAT_U(8, +, u8, 255)
+            case WAH_OP_I8X16_SUB: V128_BINARY_OP_LANE(8, -, i8)
+            case WAH_OP_I8X16_SUB_SAT_S: V128_BINARY_OP_LANE_SAT_S(8, -, i8, -128, 127)
+            case WAH_OP_I8X16_SUB_SAT_U: V128_BINARY_OP_LANE_SAT_U(8, -, u8, 255)
+
+            case WAH_OP_I16X8_ADD: V128_BINARY_OP_LANE(16, +, i16)
+            case WAH_OP_I16X8_ADD_SAT_S: V128_BINARY_OP_LANE_SAT_S(16, +, i16, -32768, 32767)
+            case WAH_OP_I16X8_ADD_SAT_U: V128_BINARY_OP_LANE_SAT_U(16, +, u16, 65535)
+            case WAH_OP_I16X8_SUB: V128_BINARY_OP_LANE(16, -, i16)
+            case WAH_OP_I16X8_SUB_SAT_S: V128_BINARY_OP_LANE_SAT_S(16, -, i16, -32768, 32767)
+            case WAH_OP_I16X8_SUB_SAT_U: V128_BINARY_OP_LANE_SAT_U(16, -, u16, 65535)
+            case WAH_OP_I16X8_MUL: V128_BINARY_OP_LANE(16, *, i16)
+
+            case WAH_OP_I32X4_ADD: V128_BINARY_OP_LANE(32, +, i32)
+            case WAH_OP_I32X4_SUB: V128_BINARY_OP_LANE(32, -, i32)
+            case WAH_OP_I32X4_MUL: V128_BINARY_OP_LANE(32, *, i32)
+
+            case WAH_OP_I64X2_ADD: V128_BINARY_OP_LANE(64, +, i64)
+            case WAH_OP_I64X2_SUB: V128_BINARY_OP_LANE(64, -, i64)
+            case WAH_OP_I64X2_MUL: V128_BINARY_OP_LANE(64, *, i64)
+
+            case WAH_OP_F32X4_ADD: V128_BINARY_OP_LANE_F(32, +, f32)
+            case WAH_OP_F32X4_SUB: V128_BINARY_OP_LANE_F(32, -, f32)
+            case WAH_OP_F32X4_MUL: V128_BINARY_OP_LANE_F(32, *, f32)
+            case WAH_OP_F32X4_DIV: V128_BINARY_OP_LANE_F(32, /, f32)
+
+            case WAH_OP_F64X2_ADD: V128_BINARY_OP_LANE_F(64, +, f64)
+            case WAH_OP_F64X2_SUB: V128_BINARY_OP_LANE_F(64, -, f64)
+            case WAH_OP_F64X2_MUL: V128_BINARY_OP_LANE_F(64, *, f64)
+            case WAH_OP_F64X2_DIV: V128_BINARY_OP_LANE_F(64, /, f64)
+
+#undef VSTACK_V128_TOP
+#undef VSTACK_V128_B
+#undef VSTACK_V128_A
+#undef V128_UNARY_OP
+#undef V128_BINARY_OP
+#undef V128_BINARY_OP_LANE
+#undef V128_BINARY_OP_LANE_SAT_S
+#undef V128_BINARY_OP_LANE_SAT_U
+#undef V128_BINARY_OP_LANE_F
 
             default:
                 err = WAH_ERROR_UNKNOWN_SECTION;
