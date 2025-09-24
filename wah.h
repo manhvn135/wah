@@ -319,6 +319,10 @@ typedef enum {
     WAH_OP_F64_PROMOTE_F32 = 0xBB,
     WAH_OP_I32_REINTERPRET_F32 = 0xBC, WAH_OP_I64_REINTERPRET_F64 = 0xBD,
     WAH_OP_F32_REINTERPRET_I32 = 0xBE, WAH_OP_F64_REINTERPRET_I64 = 0xBF,
+    WAH_OP_I32_TRUNC_SAT_F32_S = 0xC000, WAH_OP_I32_TRUNC_SAT_F32_U = 0xC001,
+    WAH_OP_I32_TRUNC_SAT_F64_S = 0xC002, WAH_OP_I32_TRUNC_SAT_F64_U = 0xC003,
+    WAH_OP_I64_TRUNC_SAT_F32_S = 0xC004, WAH_OP_I64_TRUNC_SAT_F32_U = 0xC005,
+    WAH_OP_I64_TRUNC_SAT_F64_S = 0xC006, WAH_OP_I64_TRUNC_SAT_F64_U = 0xC007,
 } wah_opcode_t;
 
 // --- Memory Structure ---
@@ -1030,6 +1034,24 @@ DEFINE_TRUNC_F2I(32, float,  u64, uint64_t,                 0,  (float)UINT64_MA
 DEFINE_TRUNC_F2I(64, double, i64,  int64_t, (double)INT64_MIN, (double) INT64_MAX + 1.0,  trunc)
 DEFINE_TRUNC_F2I(64, double, u64, uint64_t,                 0, (double)UINT64_MAX + 1.0,  trunc)
 
+// Helper functions for floating-point to integer truncations with saturation
+#define DEFINE_TRUNC_SAT_F2I(N, fty, T, ity, min_val, max_val, call) \
+static inline ity wah_trunc_sat_f##N##_to_##T(fty val) { \
+    if (isnan(val)) return 0; \
+    if (val <= (fty)min_val) return min_val; \
+    if (val >= (fty)max_val) return max_val; \
+    return (ity)call(val); \
+}
+
+DEFINE_TRUNC_SAT_F2I(32, float,  i32,  int32_t,  INT32_MIN,  INT32_MAX, truncf)
+DEFINE_TRUNC_SAT_F2I(32, float,  u32, uint32_t,          0, UINT32_MAX, truncf)
+DEFINE_TRUNC_SAT_F2I(64, double, i32,  int32_t,  INT32_MIN,  INT32_MAX, trunc)
+DEFINE_TRUNC_SAT_F2I(64, double, u32, uint32_t,          0, UINT32_MAX, trunc)
+DEFINE_TRUNC_SAT_F2I(32, float,  i64,  int64_t,  INT64_MIN,  INT64_MAX, truncf)
+DEFINE_TRUNC_SAT_F2I(32, float,  u64, uint64_t,          0, UINT64_MAX, truncf)
+DEFINE_TRUNC_SAT_F2I(64, double, i64,  int64_t,  INT64_MIN,  INT64_MAX, trunc)
+DEFINE_TRUNC_SAT_F2I(64, double, u64, uint64_t,          0, UINT64_MAX, trunc)
+
 static inline wah_error_t wah_type_stack_push(wah_type_stack_t *stack, wah_type_t type) {
     WAH_ENSURE(stack->sp < WAH_MAX_TYPE_STACK_SIZE, WAH_ERROR_VALIDATION_FAILED);
     stack->data[stack->sp++] = type;
@@ -1445,6 +1467,15 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_I64_REINTERPRET_F64: POP_PUSH(F64, I64)
         case WAH_OP_F32_REINTERPRET_I32: POP_PUSH(I32, F32)
         case WAH_OP_F64_REINTERPRET_I64: POP_PUSH(I64, F64)
+
+        case WAH_OP_I32_TRUNC_SAT_F32_S: POP_PUSH(F32, I32)
+        case WAH_OP_I32_TRUNC_SAT_F32_U: POP_PUSH(F32, I32)
+        case WAH_OP_I32_TRUNC_SAT_F64_S: POP_PUSH(F64, I32)
+        case WAH_OP_I32_TRUNC_SAT_F64_U: POP_PUSH(F64, I32)
+        case WAH_OP_I64_TRUNC_SAT_F32_S: POP_PUSH(F32, I64)
+        case WAH_OP_I64_TRUNC_SAT_F32_U: POP_PUSH(F32, I64)
+        case WAH_OP_I64_TRUNC_SAT_F64_S: POP_PUSH(F64, I64)
+        case WAH_OP_I64_TRUNC_SAT_F64_U: POP_PUSH(F64, I64)
 
 #undef UNARY_OP
 #undef BINARY_OP
@@ -2415,6 +2446,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             }
             case WAH_OP_F32_CONST: memcpy(write_ptr, ptr, 4); ptr += 4; write_ptr += 4; break;
             case WAH_OP_F64_CONST: memcpy(write_ptr, ptr, 8); ptr += 8; write_ptr += 8; break;
+
             case WAH_OP_I32_LOAD: case WAH_OP_I64_LOAD: case WAH_OP_F32_LOAD: case WAH_OP_F64_LOAD:
             case WAH_OP_I32_LOAD8_S: case WAH_OP_I32_LOAD8_U: case WAH_OP_I32_LOAD16_S: case WAH_OP_I32_LOAD16_U:
             case WAH_OP_I64_LOAD8_S: case WAH_OP_I64_LOAD8_U: case WAH_OP_I64_LOAD16_S: case WAH_OP_I64_LOAD16_U:
@@ -3114,6 +3146,15 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             case WAH_OP_I64_REINTERPRET_F64: REINTERPRET(f64, double, i64, int64_t)
             case WAH_OP_F32_REINTERPRET_I32: REINTERPRET(i32, int32_t, f32, float)
             case WAH_OP_F64_REINTERPRET_I64: REINTERPRET(i64, int64_t, f64, double)
+
+            case WAH_OP_I32_TRUNC_SAT_F32_S: { VSTACK_TOP.i32 =          wah_trunc_sat_f32_to_i32(VSTACK_TOP.f32); break; }
+            case WAH_OP_I32_TRUNC_SAT_F32_U: { VSTACK_TOP.i32 = (int32_t)wah_trunc_sat_f32_to_u32(VSTACK_TOP.f32); break; }
+            case WAH_OP_I32_TRUNC_SAT_F64_S: { VSTACK_TOP.i32 =          wah_trunc_sat_f64_to_i32(VSTACK_TOP.f64); break; }
+            case WAH_OP_I32_TRUNC_SAT_F64_U: { VSTACK_TOP.i32 = (int32_t)wah_trunc_sat_f64_to_u32(VSTACK_TOP.f64); break; }
+            case WAH_OP_I64_TRUNC_SAT_F32_S: { VSTACK_TOP.i64 =          wah_trunc_sat_f32_to_i64(VSTACK_TOP.f32); break; }
+            case WAH_OP_I64_TRUNC_SAT_F32_U: { VSTACK_TOP.i64 = (int64_t)wah_trunc_sat_f32_to_u64(VSTACK_TOP.f32); break; }
+            case WAH_OP_I64_TRUNC_SAT_F64_S: { VSTACK_TOP.i64 =          wah_trunc_sat_f64_to_i64(VSTACK_TOP.f64); break; }
+            case WAH_OP_I64_TRUNC_SAT_F64_U: { VSTACK_TOP.i64 = (int64_t)wah_trunc_sat_f64_to_u64(VSTACK_TOP.f64); break; }
 
 #undef VSTACK_TOP
 #undef VSTACK_B

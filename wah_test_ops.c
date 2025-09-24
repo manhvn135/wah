@@ -72,1340 +72,495 @@ DEFINE_RUN_TEST(f64, double, "%f", FLOAT_COMPARE(result.f64, expected_result, do
 #define run_test_f32(n,b,p,e,t) run_test_f32(n,b,sizeof(b),p,sizeof(p)/sizeof(*p),e,t)
 #define run_test_f64(n,b,p,e,t) run_test_f64(n,b,sizeof(b),p,sizeof(p)/sizeof(*p),e,t)
 
-// --- Individual Test Functions ---
+// --- Templates ---
 
-// A simple test for bitwise AND: (module (func (param i32 i32) (result i32) (i32.and (local.get 0) (local.get 1))))
-const uint8_t and_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-    // Type section
-    0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
-    // Function section
-    0x03, 0x02, 0x01, 0x00,
-    // Code section
-    0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x71, 0x0b
+// (module (func (param T) (result U) (OPCODE (local.get 0))))
+#define UNARY_TEST_WASM(arg_ty, ret_ty, opcode) { \
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, \
+    0x01, 0x06, 0x01, 0x60, 0x01, arg_ty, 0x01, ret_ty, \
+    0x03, 0x02, 0x01, 0x00, \
+    0x0a, 0x07, 0x01, 0x05, 0x00, 0x20, 0x00, opcode, 0x0b \
+}
+#define UNARY_TEST_WASM_FC(arg_ty, ret_ty, subopcode) { \
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, \
+    0x01, 0x06, 0x01, 0x60, 0x01, arg_ty, 0x01, ret_ty, \
+    0x03, 0x02, 0x01, 0x00, \
+    0x0a, 0x08, 0x01, 0x06, 0x00, 0x20, 0x00, 0xfc, subopcode, 0x0b \
 };
+
+// (module (func (param T1 T2) (result U) (OPCODE (local.get 0) (local.get 1))))
+#define BINARY_TEST_WASM(lhs_ty, rhs_ty, ret_ty, opcode) { \
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, \
+    0x01, 0x07, 0x01, 0x60, 0x02, lhs_ty, rhs_ty, 0x01, ret_ty, \
+    0x03, 0x02, 0x01, 0x00, \
+    0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, opcode, 0x0b \
+}
+
+#define CHECK_UNARY(label, arg_ty, arg, ret_ty, ret) do { \
+    wah_value_t params[1] = { { .arg_ty = arg } }; \
+    failures += run_test_##ret_ty(label, test_wasm, params, ret, false); \
+} while (0)
+
+#define CHECK_UNARY_TRAP(label, arg_ty, arg, ret_ty) do { \
+    wah_value_t params[1] = { { .arg_ty = arg } }; \
+    failures += run_test_##ret_ty(label, test_wasm, params, 0, true); \
+} while (0)
+
+#define CHECK_BINARY(label, lhs_ty, lhs, rhs_ty, rhs, ret_ty, ret) do { \
+    wah_value_t params[2] = { { .lhs_ty = lhs }, { .rhs_ty = rhs } }; \
+    failures += run_test_##ret_ty(label, test_wasm, params, ret, false); \
+} while (0)
+
+#define CHECK_BINARY_TRAP(label, lhs_ty, lhs, rhs_ty, rhs, ret_ty) do { \
+    wah_value_t params[2] = { { .lhs_ty = lhs }, { .rhs_ty = rhs } }; \
+    failures += run_test_##ret_ty(label, test_wasm, params, 0, true); \
+} while (0)
+
+// --- Individual Test Functions ---
 
 int test_i32_and() {
     int failures = 0;
-    wah_value_t params[2];
+    static const uint8_t test_wasm[] = BINARY_TEST_WASM(0x7f, 0x7f, 0x7f, 0x71);
 
     printf("\n=== Testing I32.AND ===\n");
-    params[0].i32 = 0xFF; params[1].i32 = 0x0F;
-    failures += run_test_i32("I32.AND (0xFF & 0x0F)", and_test_wasm, params, 0x0F, false);
-
+    CHECK_BINARY("I32.AND (0xFF & 0x0F)", i32, 0xFF, i32, 0x0F, i32, 0x0F);
     return failures;
 }
-
-// Test for comparison: (module (func (param i32 i32) (result i32) (i32.eq (local.get 0) (local.get 1))))
-const uint8_t eq_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-    // Type section
-    0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
-    // Function section
-    0x03, 0x02, 0x01, 0x00,
-    // Code section
-    0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x46, 0x0b
-};
 
 int test_i32_eq() {
     int failures = 0;
-    wah_value_t params[2];
+    static const uint8_t test_wasm[] = BINARY_TEST_WASM(0x7f, 0x7f, 0x7f, 0x46);
 
     printf("\n=== Testing I32.EQ ===\n");
-    params[0].i32 = 42; params[1].i32 = 42;
-    failures += run_test_i32("I32.EQ (42 == 42)", eq_test_wasm, params, 1, false);
-
-    params[0].i32 = 42; params[1].i32 = 24;
-    failures += run_test_i32("I32.EQ (42 == 24)", eq_test_wasm, params, 0, false);
-
+    CHECK_BINARY("I32.EQ (42 == 42)", i32, 42, i32, 42, i32, 1);
+    CHECK_BINARY("I32.EQ (42 == 24)", i32, 42, i32, 24, i32, 0);
     return failures;
 }
-
-// Test for i32.popcnt: (module (func (param i32) (result i32) (i32.popcnt (local.get 0))))
-const uint8_t i32_popcnt_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i32) -> i32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7f, // 1 param (i32)
-            0x01, 0x7f, // 1 result (i32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 69 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0x69, // i32.popcnt
-            0x0b // end
-};
 
 int test_i32_popcnt() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7f, 0x7f, 0x69);
 
     printf("\n=== Testing I32.POPCNT ===\n");
-    params[0].i32 = 0b10101010; // 0xAA
-    failures += run_test_i32("I32.POPCNT (0xAA)", i32_popcnt_test_wasm, params, 4, false);
-
+    CHECK_UNARY("I32.POPCNT (0xAA)", i32, 0b10101010 /*0xAA*/, i32, 4);
     return failures;
 }
-
-// Test for i64.clz: (module (func (param i64) (result i64) (i64.clz (local.get 0))))
-const uint8_t i64_clz_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i64) -> i64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7e, // 1 param (i64)
-            0x01, 0x7e, // 1 result (i64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 79 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0x79, // i64.clz
-            0x0b // end
-};
 
 int test_i64_clz() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7e, 0x7e, 0x79);
 
     printf("\n=== Testing I64.CLZ ===\n");
-    params[0].i64 = 0x00000000000000FFULL; // 56 leading zeros;
-    failures += run_test_i64("I64.CLZ (0x00...0FF)", i64_clz_test_wasm, params, 56, false);
-
+    CHECK_UNARY("I64.CLZ (0x00...0FF)", i64, 0x00000000000000FFULL /*56 leading zeros*/, i64, 56);
     return failures;
 }
-
-// Test for i32.rotl: (module (func (param i32 i32) (result i32) (i32.rotl (local.get 0) (local.get 1))))
-const uint8_t i32_rotl_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i32, i32) -> i32)
-    0x01, 0x07, // section id (1), size (7)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x02, 0x7f, 0x7f, // 2 params (i32, i32)
-            0x01, 0x7f, // 1 result (i32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x09, // section id (10), size (9)
-        0x01, // count (1 code body)
-            0x07, // code body size (LEB128) - 0 locals + 5 instructions (20 00 20 01 77 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0x20, 0x01, // local.get 1
-            0x77, // i32.rotl
-            0x0b // end
-};
-
-// Test for f64.nearest: (module (func (param f64) (result f64) (f64.nearest (local.get 0))))
-const uint8_t f64_nearest_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f64) -> f64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7c, // 1 param (f64)
-            0x01, 0x7c, // 1 result (f64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 BC 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0x9E, // f64.nearest
-            0x0b // end
-};
 
 int test_f64_nearest() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7c, 0x7c, 0x9e);
 
     printf("\n=== Testing F64.NEAREST ===\n");
-    params[0].f64 = 2.5;
-    failures += run_test_f64("F64.NEAREST (2.5)", f64_nearest_test_wasm, params, 2.0, false);
-
-    params[0].f64 = 3.5;
-    failures += run_test_f64("F64.NEAREST (3.5)", f64_nearest_test_wasm, params, 4.0, false);
-
-    params[0].f64 = -2.5;
-    failures += run_test_f64("F64.NEAREST (-2.5)", f64_nearest_test_wasm, params, -2.0, false);
-
-    params[0].f64 = -3.5;
-    failures += run_test_f64("F64.NEAREST (-3.5)", f64_nearest_test_wasm, params, -4.0, false);
-
+    CHECK_UNARY("F64.NEAREST (2.5)", f64, 2.5, f64, 2.0);
+    CHECK_UNARY("F64.NEAREST (3.5)", f64, 3.5, f64, 4.0);
+    CHECK_UNARY("F64.NEAREST (-2.5)", f64, -2.5, f64, -2.0);
+    CHECK_UNARY("F64.NEAREST (-3.5)", f64, -3.5, f64, -4.0);
     return failures;
 }
 
-// Test for f32.min: (module (func (param f32 f32) (result f32) (f32.min (local.get 0) (local.get 1))))
-const uint8_t f32_min_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f32, f32) -> f32)
-    0x01, 0x07, // section id (1), size (7)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x02, 0x7d, 0x7d, // 2 params (f32, f32)
-            0x01, 0x7d, // 1 result (f32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x09, // section id (10), size (9)
-        0x01, // count (1 code body)
-            0x07, // code body size (LEB128) - 0 locals + 5 instructions (20 00 20 01 94 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0x20, 0x01, // local.get 1
-            0x96, // f32.min
-            0x0b // end
-};
-
 int test_i32_rotl() {
     int failures = 0;
-    wah_value_t params[2];
+    static const uint8_t test_wasm[] = BINARY_TEST_WASM(0x7f, 0x7f, 0x7f, 0x77);
 
     printf("\n=== Testing I32.ROTL ===\n");
-    params[0].i32 = 0x80000001; // 1000...0001
-    params[1].i32 = 1;
-    failures += run_test_i32("I32.ROTL (0x80000001, 1)", i32_rotl_test_wasm, params, 0x00000003, false);
-
+    CHECK_BINARY("I32.ROTL (0x80000001, 1)", i32, 0x80000001 /*1000...0001*/, i32, 1, i32, 0x00000003);
     return failures;
 }
 
 int test_f32_min() {
     int failures = 0;
-    wah_value_t params[2];
+    const uint8_t test_wasm[] = BINARY_TEST_WASM(0x7d, 0x7d, 0x7d, 0x96);
 
     printf("\n=== Testing F32.MIN ===\n");
-    params[0].f32 = 10.0f; params[1].f32 = 20.0f;
-    failures += run_test_f32("F32.MIN (10.0f, 20.0f)", f32_min_test_wasm, params, 10.0f, false);
-
-    params[0].f32 = 5.0f; params[1].f32 = -5.0f;
-    failures += run_test_f32("F32.MIN (5.0f, -5.0f)", f32_min_test_wasm, params, -5.0f, false);
-
+    CHECK_BINARY("F32.MIN (10.0f, 20.0f)", f32, 10.0f, f32, 20.0f, f32, 10.0f);
+    CHECK_BINARY("F32.MIN (5.0f, -5.0f)", f32, 5.0f, f32, -5.0f, f32, -5.0f);
     return failures;
 }
-
-// Test for i32.wrap_i64: (module (func (param i64) (result i32) (i32.wrap_i64 (local.get 0))))
-const uint8_t i32_wrap_i64_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i64) -> i32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7e, // 1 param (i64)
-            0x01, 0x7f, // 1 result (i32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 A7 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xA7, // i32.wrap_i64
-            0x0b // end
-};
 
 int test_i32_wrap_i64() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7e, 0x7f, 0xa7);
 
     printf("\n=== Testing I32.WRAP_I64 ===\n");
-    params[0].i64 = 0x123456789ABCDEF0LL;
-    failures += run_test_i32("I32.WRAP_I64 (0x123456789ABCDEF0)", i32_wrap_i64_test_wasm, params, (int32_t)0x9ABCDEF0, false);
-
-    params[0].i64 = 0xFFFFFFFF12345678LL;
-    failures += run_test_i32("I32.WRAP_I64 (0xFFFFFFFF12345678)", i32_wrap_i64_test_wasm, params, (int32_t)0x12345678, false);
-
+    CHECK_UNARY("I32.WRAP_I64 (0x123456789ABCDEF0)", i64, 0x123456789ABCDEF0LL, i32, (int32_t)0x9ABCDEF0);
+    CHECK_UNARY("I32.WRAP_I64 (0xFFFFFFFF12345678)", i64, 0xFFFFFFFF12345678LL, i32, (int32_t)0x12345678);
     return failures;
 }
-
-// Test for i32.trunc_f32_s: (module (func (param f32) (result i32) (i32.trunc_f32_s (local.get 0))))
-const uint8_t i32_trunc_f32_s_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f32) -> i32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7d, // 1 param (f32)
-            0x01, 0x7f, // 1 result (i32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 A8 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xA8, // i32.trunc_f32_s
-            0x0b // end
-};
 
 int test_i32_trunc_f32_s() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7d, 0x7f, 0xa8);
 
     printf("\n=== Testing I32.TRUNC_F32_S ===\n");
-    params[0].f32 = 10.5f;
-    failures += run_test_i32("I32.TRUNC_F32_S (10.5f)", i32_trunc_f32_s_test_wasm, params, 10, false);
-
-    params[0].f32 = -10.5f;
-    failures += run_test_i32("I32.TRUNC_F32_S (-10.5f)", i32_trunc_f32_s_test_wasm, params, -10, false);
-
-    // Test for trap (NaN)
-    params[0].f32 = NAN;
-    failures += run_test_i32("I32.TRUNC_F32_S (NaN)", i32_trunc_f32_s_test_wasm, params, 0, true); // Expected result doesn't matter for trap
-
-    // Test for trap (Infinity)
-    params[0].f32 = INFINITY;
-    failures += run_test_i32("I32.TRUNC_F32_S (Infinity)", i32_trunc_f32_s_test_wasm, params, 0, true);
-
-    // Test for trap (too large)
-    params[0].f32 = 2147483648.0f; // INT32_MAX + 1
-    failures += run_test_i32("I32.TRUNC_F32_S (too large)", i32_trunc_f32_s_test_wasm, params, 0, true);
-
+    CHECK_UNARY("I32.TRUNC_F32_S (10.5f)", f32, 10.5f, i32, 10);
+    CHECK_UNARY("I32.TRUNC_F32_S (-10.5f)", f32, -10.5f, i32, -10);
+    CHECK_UNARY_TRAP("I32.TRUNC_F32_S (NaN)", f32, NAN, i32);
+    CHECK_UNARY_TRAP("I32.TRUNC_F32_S (Infinity)", f32, INFINITY, i32);
+    CHECK_UNARY_TRAP("I32.TRUNC_F32_S (too large)", f32, 2147483648.0f /*INT32_MAX + 1*/, i32);
     return failures;
 }
-
-// Test for i32.trunc_f32_u: (module (func (param f32) (result i32) (i32.trunc_f32_u (local.get 0))))
-const uint8_t i32_trunc_f32_u_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f32) -> i32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7d, // 1 param (f32)
-            0x01, 0x7f, // 1 result (i32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 A9 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xA9, // i32.trunc_f32_u
-            0x0b // end
-};
 
 int test_i32_trunc_f32_u() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7d, 0x7f, 0xa9);
 
     printf("\n=== Testing I32.TRUNC_F32_U ===\n");
-    params[0].f32 = 10.5f;
-    failures += run_test_i32("I32.TRUNC_F32_U (10.5f)", i32_trunc_f32_u_test_wasm, params, 10, false);
-
-    // Test for trap (negative)
-    params[0].f32 = -10.5f;
-    failures += run_test_i32("I32.TRUNC_F32_U (-10.5f)", i32_trunc_f32_u_test_wasm, params, 0, true);
-
-    // Test for trap (too large)
-    params[0].f32 = 4294967296.0f; // UINT32_MAX + 1
-    failures += run_test_i32("I32.TRUNC_F32_U (too large)", i32_trunc_f32_u_test_wasm, params, 0, true);
-
+    CHECK_UNARY("I32.TRUNC_F32_U (10.5f)", f32, 10.5f, i32, 10);
+    CHECK_UNARY_TRAP("I32.TRUNC_F32_U (-10.5f)", f32, -10.5f, i32);
+    CHECK_UNARY_TRAP("I32.TRUNC_F32_U (too large)", f32, 4294967296.0f /*UINT32_MAX + 1*/, i32);
     return failures;
 }
-
-// Test for i32.trunc_f64_s: (module (func (param f64) (result i32) (i32.trunc_f64_s (local.get 0))))
-const uint8_t i32_trunc_f64_s_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f64) -> i32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7c, // 1 param (f64)
-            0x01, 0x7f, // 1 result (i32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 AA 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xAA, // i32.trunc_f64_s
-            0x0b // end
-};
 
 int test_i32_trunc_f64_s() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7c, 0x7f, 0xaa);
 
     printf("\n=== Testing I32.TRUNC_F64_S ===\n");
-    params[0].f64 = 10.5;
-    failures += run_test_i32("I32.TRUNC_F64_S (10.5)", i32_trunc_f64_s_test_wasm, params, 10, false);
-
-    params[0].f64 = -10.5;
-    failures += run_test_i32("I32.TRUNC_F64_S (-10.5)", i32_trunc_f64_s_test_wasm, params, -10, false);
-
-    // Test for trap (NaN)
-    params[0].f64 = NAN;
-    failures += run_test_i32("I32.TRUNC_F64_S (NaN)", i32_trunc_f64_s_test_wasm, params, 0, true);
-
-    // Test for trap (Infinity)
-    params[0].f64 = INFINITY;
-    failures += run_test_i32("I32.TRUNC_F64_S (Infinity)", i32_trunc_f64_s_test_wasm, params, 0, true);
-
-    // Test for trap (too large)
-    params[0].f64 = 2147483648.0; // INT32_MAX + 1
-    failures += run_test_i32("I32.TRUNC_F64_S (too large)", i32_trunc_f64_s_test_wasm, params, 0, true);
-
+    CHECK_UNARY("I32.TRUNC_F64_S (10.5)", f64, 10.5, i32, 10);
+    CHECK_UNARY("I32.TRUNC_F64_S (-10.5)", f64, -10.5, i32, -10);
+    CHECK_UNARY_TRAP("I32.TRUNC_F64_S (NaN)", f64, NAN, i32);
+    CHECK_UNARY_TRAP("I32.TRUNC_F64_S (Infinity)", f64, INFINITY, i32);
+    CHECK_UNARY_TRAP("I32.TRUNC_F64_S (too large)", f64, 2147483648.0 /*INT32_MAX + 1*/, i32);
     return failures;
 }
-
-// Test for i32.trunc_f64_u: (module (func (param f64) (result i32) (i32.trunc_f64_u (local.get 0))))
-const uint8_t i32_trunc_f64_u_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f64) -> i32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7c, // 1 param (f64)
-            0x01, 0x7f, // 1 result (i32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 AB 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xAB, // i32.trunc_f64_u
-            0x0b // end
-};
 
 int test_i32_trunc_f64_u() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7c, 0x7f, 0xab);
 
     printf("\n=== Testing I32.TRUNC_F64_U ===\n");
-    params[0].f64 = 10.5;
-    failures += run_test_i32("I32.TRUNC_F64_U (10.5)", i32_trunc_f64_u_test_wasm, params, 10, false);
-
-    // Test for trap (negative)
-    params[0].f64 = -10.5;
-    failures += run_test_i32("I32.TRUNC_F64_U (-10.5)", i32_trunc_f64_u_test_wasm, params, 0, true);
-
-    // Test for trap (too large)
-    params[0].f64 = 4294967296.0; // UINT32_MAX + 1
-    failures += run_test_i32("I32.TRUNC_F64_U (too large)", i32_trunc_f64_u_test_wasm, params, 0, true);
-
+    CHECK_UNARY("I32.TRUNC_F64_U (10.5)", f64, 10.5, i32, 10);
+    CHECK_UNARY_TRAP("I32.TRUNC_F64_U (-10.5)", f64, -10.5, i32);
+    CHECK_UNARY_TRAP("I32.TRUNC_F64_U (too large)", f64, 4294967296.0 /*UINT32_MAX + 1*/, i32);
     return failures;
 }
-
-// Test for i64.extend_i32_s: (module (func (param i32) (result i64) (i64.extend_i32_s (local.get 0))))
-const uint8_t i64_extend_i32_s_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i32) -> i64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7f, // 1 param (i32)
-            0x01, 0x7e, // 1 result (i64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 AC 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xAC, // i64.extend_i32_s
-            0x0b // end
-};
 
 int test_i64_extend_i32_s() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7f, 0x7e, 0xac);
 
     printf("\n=== Testing I64.EXTEND_I32_S ===\n");
-    params[0].i32 = 12345;
-    failures += run_test_i64("I64.EXTEND_I32_S (12345)", i64_extend_i32_s_test_wasm, params, 12345LL, false);
-
-    params[0].i32 = -12345;
-    failures += run_test_i64("I64.EXTEND_I32_S (-12345)", i64_extend_i32_s_test_wasm, params, -12345LL, false);
-
-    params[0].i32 = 0x80000000; // Smallest signed 32-bit integer
-    failures += run_test_i64("I64.EXTEND_I32_S (0x80000000)", i64_extend_i32_s_test_wasm, params, (int64_t)0xFFFFFFFF80000000LL, false);
-
+    CHECK_UNARY("I64.EXTEND_I32_S (12345)", i32, 12345, i64, 12345LL);
+    CHECK_UNARY("I64.EXTEND_I32_S (-12345)", i32, -12345, i64, -12345LL);
+    CHECK_UNARY("I64.EXTEND_I32_S (0x80000000)", i32, 0x80000000, i64, (int64_t)0xFFFFFFFF80000000LL); // Smallest signed 32-bit integer
     return failures;
 }
-
-// Test for i64.extend_i32_u: (module (func (param i32) (result i64) (i64.extend_i32_u (local.get 0))))
-const uint8_t i64_extend_i32_u_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i32) -> i64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7f, // 1 param (i32)
-            0x01, 0x7e, // 1 result (i64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 AD 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xAD, // i64.extend_i32_u
-            0x0b // end
-};
 
 int test_i64_extend_i32_u() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7f, 0x7e, 0xad);
 
     printf("\n=== Testing I64.EXTEND_I32_U ===\n");
-    params[0].i32 = 12345;
-    failures += run_test_i64("I64.EXTEND_I32_U (12345)", i64_extend_i32_u_test_wasm, params, 12345LL, false);
-
-    params[0].i32 = 0xFFFFFFFF; // Largest unsigned 32-bit integer
-    failures += run_test_i64("I64.EXTEND_I32_U (0xFFFFFFFF)", i64_extend_i32_u_test_wasm, params, 0x00000000FFFFFFFFLL, false);
-
+    CHECK_UNARY("I64.EXTEND_I32_U (12345)", i32, 12345, i64, 12345LL);
+    CHECK_UNARY("I64.EXTEND_I32_U (0xFFFFFFFF)", i32, 0xFFFFFFFF, i64, 0x00000000FFFFFFFFLL); // Largest unsigned 32-bit integer
     return failures;
 }
-
-// Test for i64.trunc_f32_s: (module (func (param f32) (result i64) (i64.trunc_f32_s (local.get 0))))
-const uint8_t i64_trunc_f32_s_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f32) -> i64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7d, // 1 param (f32)
-            0x01, 0x7e, // 1 result (i64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 AE 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xAE, // i64.trunc_f32_s
-            0x0b // end
-};
 
 int test_i64_trunc_f32_s() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7d, 0x7e, 0xae);
 
     printf("\n=== Testing I64.TRUNC_F32_S ===\n");
-    params[0].f32 = 10.5f;
-    failures += run_test_i64("I64.TRUNC_F32_S (10.5f)", i64_trunc_f32_s_test_wasm, params, 10LL, false);
-
-    params[0].f32 = -10.5f;
-    failures += run_test_i64("I64.TRUNC_F32_S (-10.5f)", i64_trunc_f32_s_test_wasm, params, -10LL, false);
-
-    // Test for trap (NaN)
-    params[0].f32 = NAN;
-    failures += run_test_i64("I64.TRUNC_F32_S (NaN)", i64_trunc_f32_s_test_wasm, params, 0LL, true); // Expected result doesn't matter for trap
-
-    // Test for trap (Infinity)
-    params[0].f32 = INFINITY;
-    failures += run_test_i64("I64.TRUNC_F32_S (Infinity)", i64_trunc_f32_s_test_wasm, params, 0LL, true);
-
-    // Test for trap (too large)
-    params[0].f32 = 9223372036854775808.0f; // INT64_MAX + 1
-    failures += run_test_i64("I64.TRUNC_F32_S (too large)", i64_trunc_f32_s_test_wasm, params, 0LL, true);
-
+    CHECK_UNARY("I64.TRUNC_F32_S (10.5f)", f32, 10.5f, i64, 10LL);
+    CHECK_UNARY("I64.TRUNC_F32_S (-10.5f)", f32, -10.5f, i64, -10LL);
+    CHECK_UNARY_TRAP("I64.TRUNC_F32_S (NaN)", f32, NAN, i64);
+    CHECK_UNARY_TRAP("I64.TRUNC_F32_S (Infinity)", f32, INFINITY, i64);
+    CHECK_UNARY_TRAP("I64.TRUNC_F32_S (too large)", f32, 9223372036854775808.0f /*INT64_MAX + 1*/, i64);
     return failures;
 }
-
-// Test for i64.trunc_f32_u: (module (func (param f32) (result i64) (i64.trunc_f32_u (local.get 0))))
-const uint8_t i64_trunc_f32_u_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f32) -> i64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7d, // 1 param (f32)
-            0x01, 0x7e, // 1 result (i64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 AF 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xAF, // i64.trunc_f32_u
-            0x0b // end
-};
 
 int test_i64_trunc_f32_u() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7d, 0x7e, 0xaf);
 
     printf("\n=== Testing I64.TRUNC_F32_U ===\n");
-    params[0].f32 = 10.5f;
-    failures += run_test_i64("I64.TRUNC_F32_U (10.5f)", i64_trunc_f32_u_test_wasm, params, 10LL, false);
-
-    // Test for trap (negative)
-    params[0].f32 = -10.5f;
-    failures += run_test_i64("I64.TRUNC_F32_U (-10.5f)", i64_trunc_f32_u_test_wasm, params, 0LL, true);
-
-    // Test for trap (too large)
-    params[0].f32 = 18446744073709551616.0f; // UINT64_MAX + 1
-    failures += run_test_i64("I64.TRUNC_F32_U (too large)", i64_trunc_f32_u_test_wasm, params, 0LL, true);
-
+    CHECK_UNARY("I64.TRUNC_F32_U (10.5f)", f32, 10.5f, i64, 10LL);
+    CHECK_UNARY_TRAP("I64.TRUNC_F32_U (-10.5f)", f32, -10.5f, i64);
+    CHECK_UNARY_TRAP("I64.TRUNC_F32_U (too large)", f32, 18446744073709551616.0f /*UINT64_MAX + 1*/, i64);
     return failures;
 }
-
-// Test for i64.trunc_f64_s: (module (func (param f64) (result i64) (i64.trunc_f64_s (local.get 0))))
-const uint8_t i64_trunc_f64_s_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f64) -> i64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7c, // 1 param (f64)
-            0x01, 0x7e, // 1 result (i64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 B0 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xB0, // i64.trunc_f64_s
-            0x0b // end
-};
 
 int test_i64_trunc_f64_s() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7c, 0x7e, 0xb0);
 
     printf("\n=== Testing I64.TRUNC_F64_S ===\n");
-    params[0].f64 = 10.5;
-    failures += run_test_i64("I64.TRUNC_F64_S (10.5)", i64_trunc_f64_s_test_wasm, params, 10LL, false);
-
-    params[0].f64 = -10.5;
-    failures += run_test_i64("I64.TRUNC_F64_S (-10.5)", i64_trunc_f64_s_test_wasm, params, -10LL, false);
-
-    // Test for trap (NaN)
-    params[0].f64 = NAN;
-    failures += run_test_i64("I64.TRUNC_F64_S (NaN)", i64_trunc_f64_s_test_wasm, params, 0LL, true);
-
-    // Test for trap (Infinity)
-    params[0].f64 = INFINITY;
-    failures += run_test_i64("I64.TRUNC_F64_S (Infinity)", i64_trunc_f64_s_test_wasm, params, 0LL, true);
-
-    // Test for trap (too large)
-    params[0].f64 = 9223372036854775808.0; // INT64_MAX + 1
-    failures += run_test_i64("I64.TRUNC_F64_S (too large)", i64_trunc_f64_s_test_wasm, params, 0LL, true);
-
+    CHECK_UNARY("I64.TRUNC_F64_S (10.5)", f64, 10.5, i64, 10LL);
+    CHECK_UNARY("I64.TRUNC_F64_S (-10.5)", f64, -10.5, i64, -10LL);
+    CHECK_UNARY_TRAP("I64.TRUNC_F64_S (NaN)", f64, NAN, i64);
+    CHECK_UNARY_TRAP("I64.TRUNC_F64_S (Infinity)", f64, INFINITY, i64);
+    CHECK_UNARY_TRAP("I64.TRUNC_F64_S (too large)", f64, 9223372036854775808.0 /*INT64_MAX + 1*/, i64);
     return failures;
 }
-
-// Test for i64.trunc_f64_u: (module (func (param f64) (result i64) (i64.trunc_f64_u (local.get 0))))
-const uint8_t i64_trunc_f64_u_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f64) -> i64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7c, // 1 param (f64)
-            0x01, 0x7e, // 1 result (i64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 B1 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xB1, // i64.trunc_f64_u
-            0x0b // end
-};
 
 int test_i64_trunc_f64_u() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7c, 0x7e, 0xb1);
 
     printf("\n=== Testing I64.TRUNC_F64_U ===\n");
-    params[0].f64 = 10.5;
-    failures += run_test_i64("I64.TRUNC_F64_U (10.5)", i64_trunc_f64_u_test_wasm, params, 10LL, false);
-
-    // Test for trap (negative)
-    params[0].f64 = -10.5;
-    failures += run_test_i64("I64.TRUNC_F64_U (-10.5)", i64_trunc_f64_u_test_wasm, params, 0LL, true);
-
-    // Test for trap (too large)
-    params[0].f64 = 18446744073709551616.0; // UINT64_MAX + 1
-    failures += run_test_i64("I64.TRUNC_F64_U (too large)", i64_trunc_f64_u_test_wasm, params, 0LL, true);
-
+    CHECK_UNARY("I64.TRUNC_F64_U (10.5)", f64, 10.5, i64, 10LL);
+    CHECK_UNARY_TRAP("I64.TRUNC_F64_U (-10.5)", f64, -10.5, i64);
+    CHECK_UNARY_TRAP("I64.TRUNC_F64_U (too large)", f64, 18446744073709551616.0 /*UINT64_MAX + 1*/, i64);
     return failures;
 }
-
-// Test for f32.convert_i32_s: (module (func (param i32) (result f32) (f32.convert_i32_s (local.get 0))))
-const uint8_t f32_convert_i32_s_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i32) -> f32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7f, // 1 param (i32)
-            0x01, 0x7d, // 1 result (f32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 B2 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xB2, // f32.convert_i32_s
-            0x0b // end
-};
 
 int test_f32_convert_i32_s() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7f, 0x7d, 0xb2);
 
     printf("\n=== Testing F32.CONVERT_I32_S ===\n");
-    params[0].i32 = 12345;
-    failures += run_test_f32("F32.CONVERT_I32_S (12345)", f32_convert_i32_s_test_wasm, params, 12345.0f, false);
-
-    params[0].i32 = -12345;
-    failures += run_test_f32("F32.CONVERT_I32_S (-12345)", f32_convert_i32_s_test_wasm, params, -12345.0f, false);
-
+    CHECK_UNARY("F32.CONVERT_I32_S (12345)", i32, 12345, f32, 12345.0f);
+    CHECK_UNARY("F32.CONVERT_I32_S (-12345)", i32, -12345, f32, -12345.0f);
     return failures;
 }
-
-// Test for f32.convert_i32_u: (module (func (param i32) (result f32) (f32.convert_i32_u (local.get 0))))
-const uint8_t f32_convert_i32_u_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i32) -> f32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7f, // 1 param (i32)
-            0x01, 0x7d, // 1 result (f32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 B3 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xB3, // f32.convert_i32_u
-            0x0b // end
-};
 
 int test_f32_convert_i32_u() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7f, 0x7d, 0xb3);
 
     printf("\n=== Testing F32.CONVERT_I32_U ===\n");
-    params[0].i32 = 12345;
-    failures += run_test_f32("F32.CONVERT_I32_U (12345)", f32_convert_i32_u_test_wasm, params, 12345.0f, false);
-
-    params[0].i32 = 0xFFFFFFFF; // UINT32_MAX
-    failures += run_test_f32("F32.CONVERT_I32_U (0xFFFFFFFF)", f32_convert_i32_u_test_wasm, params, 4294967295.0f, false);
-
+    CHECK_UNARY("F32.CONVERT_I32_U (12345)", i32, 12345, f32, 12345.0f);
+    CHECK_UNARY("F32.CONVERT_I32_U (0xFFFFFFFF)", i32, 0xFFFFFFFF /*UINT32_MAX*/, f32, 4294967295.0f);
     return failures;
 }
-
-// Test for f32.convert_i64_s: (module (func (param i64) (result f32) (f32.convert_i64_s (local.get 0))))
-const uint8_t f32_convert_i64_s_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i64) -> f32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7e, // 1 param (i64)
-            0x01, 0x7d, // 1 result (f32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 B4 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xB4, // f32.convert_i64_s
-            0x0b // end
-};
 
 int test_f32_convert_i64_s() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7e, 0x7d, 0xb4);
 
     printf("\n=== Testing F32.CONVERT_I64_S ===\n");
-    params[0].i64 = 123456789012345LL;
-    failures += run_test_f32("F32.CONVERT_I64_S (123456789012345)", f32_convert_i64_s_test_wasm, params, 123456788103168.0f, false); // Precision loss expected
-
-    params[0].i64 = -123456789012345LL;
-    failures += run_test_f32("F32.CONVERT_I64_S (-123456789012345)", f32_convert_i64_s_test_wasm, params, -123456788103168.0f, false); // Precision loss expected
-
+    CHECK_UNARY("F32.CONVERT_I64_S (123456789012345)", i64, 123456789012345LL, f32, 123456788103168.0f); // Precision loss expected
+    CHECK_UNARY("F32.CONVERT_I64_S (-123456789012345)", i64, -123456789012345LL, f32, -123456788103168.0f); // Precision loss expected
     return failures;
 }
-
-// Test for f32.convert_i64_u: (module (func (param i64) (result f32) (f32.convert_i64_u (local.get 0))))
-const uint8_t f32_convert_i64_u_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i64) -> f32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7e, // 1 param (i64)
-            0x01, 0x7d, // 1 result (f32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 B5 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xB5, // f32.convert_i64_u
-            0x0b // end
-};
 
 int test_f32_convert_i64_u() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7e, 0x7d, 0xb5);
 
     printf("\n=== Testing F32.CONVERT_I64_U ===\n");
-    params[0].i64 = 123456789012345ULL;
-    failures += run_test_f32("F32.CONVERT_I64_U (123456789012345)", f32_convert_i64_u_test_wasm, params, 123456788103168.0f, false); // Precision loss expected
-
-    params[0].i64 = 0xFFFFFFFFFFFFFFFFULL; // UINT64_MAX
-    failures += run_test_f32("F32.CONVERT_I64_U (0xFFFFFFFFFFFFFFFF)", f32_convert_i64_u_test_wasm, params, 1.8446744073709552e+19f, false); // Precision loss expected
-
+    CHECK_UNARY("F32.CONVERT_I64_U (123456789012345)", i64, 123456789012345ULL, f32, 123456788103168.0f); // Precision loss expected
+    CHECK_UNARY("F32.CONVERT_I64_U (0xFFFFFFFFFFFFFFFF)", i64, 0xFFFFFFFFFFFFFFFFULL /*UINT64_MAX*/, f32, 1.8446744073709552e+19f); // Precision loss expected
     return failures;
 }
-
-// Test for f32.demote_f64: (module (func (param f64) (result f32) (f32.demote_f64 (local.get 0))))
-const uint8_t f32_demote_f64_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f64) -> f32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7c, // 1 param (f64)
-            0x01, 0x7d, // 1 result (f32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 B6 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xB6, // f32.demote_f64
-            0x0b // end
-};
 
 int test_f32_demote_f64() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7c, 0x7d, 0xb6);
 
     printf("\n=== Testing F32.DEMOTE_F64 ===\n");
-    params[0].f64 = 123.456;
-    failures += run_test_f32("F32.DEMOTE_F64 (123.456)", f32_demote_f64_test_wasm, params, 123.456f, false);
-
-    params[0].f64 = 1.2345678901234567e+300; // A large double that will become infinity in float
-    failures += run_test_f32("F32.DEMOTE_F64 (large double to float)", f32_demote_f64_test_wasm, params, INFINITY, false);
-
+    CHECK_UNARY("F32.DEMOTE_F64 (123.456)", f64, 123.456, f32, 123.456f);
+    CHECK_UNARY("F32.DEMOTE_F64 (large double to float)", f64, 1.2345678901234567e+300, f32, INFINITY); // A large double that will become infinity in float
     return failures;
 }
-
-// Test for f64.convert_i32_s: (module (func (param i32) (result f64) (f64.convert_i32_s (local.get 0))))
-const uint8_t f64_convert_i32_s_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i32) -> f64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7f, // 1 param (i32)
-            0x01, 0x7c, // 1 result (f64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 B7 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xB7, // f64.convert_i32_s
-            0x0b // end
-};
 
 int test_f64_convert_i32_s() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7f, 0x7c, 0xb7);
 
     printf("\n=== Testing F64.CONVERT_I32_S ===\n");
-    params[0].i32 = 12345;
-    failures += run_test_f64("F64.CONVERT_I32_S (12345)", f64_convert_i32_s_test_wasm, params, 12345.0, false);
-
-    params[0].i32 = -12345;
-    failures += run_test_f64("F64.CONVERT_I32_S (-12345)", f64_convert_i32_s_test_wasm, params, -12345.0, false);
-
+    CHECK_UNARY("F64.CONVERT_I32_S (12345)", i32, 12345, f64, 12345.0);
+    CHECK_UNARY("F64.CONVERT_I32_S (-12345)", i32, -12345, f64, -12345.0);
     return failures;
 }
-
-// Test for f64.convert_i32_u: (module (func (param i32) (result f64) (f64.convert_i32_u (local.get 0))))
-const uint8_t f64_convert_i32_u_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i32) -> f64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7f, // 1 param (i32)
-            0x01, 0x7c, // 1 result (f64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 B8 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xB8, // f64.convert_i32_u
-            0x0b // end
-};
 
 int test_f64_convert_i32_u() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7f, 0x7c, 0xb8);
 
     printf("\n=== Testing F64.CONVERT_I32_U ===\n");
-    params[0].i32 = 12345;
-    failures += run_test_f64("F64.CONVERT_I32_U (12345)", f64_convert_i32_u_test_wasm, params, 12345.0, false);
-
-    params[0].i32 = 0xFFFFFFFF; // UINT32_MAX
-    failures += run_test_f64("F64.CONVERT_I32_U (0xFFFFFFFF)", f64_convert_i32_u_test_wasm, params, 4294967295.0, false);
-
+    CHECK_UNARY("F64.CONVERT_I32_U (12345)", i32, 12345, f64, 12345.0);
+    CHECK_UNARY("F64.CONVERT_I32_U (0xFFFFFFFF)", i32, 0xFFFFFFFF /*UINT32_MAX*/, f64, 4294967295.0);
     return failures;
 }
-
-// Test for f64.convert_i64_s: (module (func (param i64) (result f64) (f64.convert_i64_s (local.get 0))))
-const uint8_t f64_convert_i64_s_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i64) -> f64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7e, // 1 param (i64)
-            0x01, 0x7c, // 1 result (f64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 B9 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xB9, // f64.convert_i64_s
-            0x0b // end
-};
 
 int test_f64_convert_i64_s() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7e, 0x7c, 0xb9);
 
     printf("\n=== Testing F64.CONVERT_I64_S ===\n");
-    params[0].i64 = 1234567890123456789LL;
-    failures += run_test_f64("F64.CONVERT_I64_S (1234567890123456789)", f64_convert_i64_s_test_wasm, params, 1234567890123456768.0, false); // Precision loss expected
-
-    params[0].i64 = -1234567890123456789LL;
-    failures += run_test_f64("F64.CONVERT_I64_S (-1234567890123456789)", f64_convert_i64_s_test_wasm, params, -1234567890123456768.0, false); // Precision loss expected
-
+    CHECK_UNARY("F64.CONVERT_I64_S (1234567890123456789)", i64, 1234567890123456789LL, f64, 1234567890123456768.0); // Precision loss expected
+    CHECK_UNARY("F64.CONVERT_I64_S (-1234567890123456789)", i64, -1234567890123456789LL, f64, -1234567890123456768.0); // Precision loss expected
     return failures;
 }
-
-// Test for f64.convert_i64_u: (module (func (param i64) (result f64) (f64.convert_i64_u (local.get 0))))
-const uint8_t f64_convert_i64_u_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i64) -> f64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7e, // 1 param (i64)
-            0x01, 0x7c, // 1 result (f64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 BA 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xBA, // f64.convert_i64_u
-            0x0b // end
-};
 
 int test_f64_convert_i64_u() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7e, 0x7c, 0xba);
 
     printf("\n=== Testing F64.CONVERT_I64_U ===\n");
-    params[0].i64 = 1234567890123456789ULL;
-    failures += run_test_f64("F64.CONVERT_I64_U (1234567890123456789)", f64_convert_i64_u_test_wasm, params, 1234567890123456768.0, false); // Precision loss expected
-
-    params[0].i64 = 0xFFFFFFFFFFFFFFFFULL; // UINT64_MAX
-    failures += run_test_f64("F64.CONVERT_I64_U (0xFFFFFFFFFFFFFFFF)", f64_convert_i64_u_test_wasm, params, 1.8446744073709552e+19, false); // Precision loss expected
-
+    CHECK_UNARY("F64.CONVERT_I64_U (1234567890123456789)", i64, 1234567890123456789ULL, f64, 1234567890123456768.0); // Precision loss expected
+    CHECK_UNARY("F64.CONVERT_I64_U (0xFFFFFFFFFFFFFFFF)", i64, 0xFFFFFFFFFFFFFFFFULL /*UINT64_MAX*/, f64, 1.8446744073709552e+19); // Precision loss expected
     return failures;
 }
-
-// Test for f64.promote_f32: (module (func (param f32) (result f64) (f64.promote_f32 (local.get 0))))
-const uint8_t f64_promote_f32_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f32) -> f64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7d, // 1 param (f32)
-            0x01, 0x7c, // 1 result (f64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 BB 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xBB, // f64.promote_f32
-            0x0b // end
-};
 
 int test_f64_promote_f32() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7d, 0x7c, 0xbb);
 
     printf("\n=== Testing F64.PROMOTE_F32 ===\n");
-    params[0].f32 = 123.456f;
-    failures += run_test_f64("F64.PROMOTE_F32 (123.456f)", f64_promote_f32_test_wasm, params, (double)123.456f, false);
-
+    CHECK_UNARY("F64.PROMOTE_F32 (123.456f)", f32, 123.456f, f64, (double)123.456f);
     return failures;
 }
-
-// Test for i32.reinterpret_f32: (module (func (param f32) (result i32) (i32.reinterpret_f32 (local.get 0))))
-const uint8_t i32_reinterpret_f32_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f32) -> i32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7d, // 1 param (f32)
-            0x01, 0x7f, // 1 result (i32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 BC 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xBC, // i32.reinterpret_f32
-            0x0b // end
-};
 
 int test_i32_reinterpret_f32() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7d, 0x7f, 0xbc);
 
     printf("\n=== Testing I32.REINTERPRET_F32 ===\n");
-    params[0].f32 = 1.0f;
-    failures += run_test_i32("I32.REINTERPRET_F32 (1.0f)", i32_reinterpret_f32_test_wasm, params, 0x3F800000, false);
-
+    CHECK_UNARY("I32.REINTERPRET_F32 (1.0f)", f32, 1.0f, i32, 0x3F800000);
     return failures;
 }
-
-// Test for i64.reinterpret_f64: (module (func (param f64) (result i64) (i64.reinterpret_f64 (local.get 0))))
-const uint8_t i64_reinterpret_f64_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(f64) -> i64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7c, // 1 param (f64)
-            0x01, 0x7e, // 1 result (i64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 BD 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xBD, // i64.reinterpret_f64
-            0x0b // end
-};
 
 int test_i64_reinterpret_f64() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7c, 0x7e, 0xbd);
 
     printf("\n=== Testing I64.REINTERPRET_F64 ===\n");
-    params[0].f64 = 1.0;
-    failures += run_test_i64("I64.REINTERPRET_F64 (1.0)", i64_reinterpret_f64_test_wasm, params, 0x3FF0000000000000ULL, false);
-
+    CHECK_UNARY("I64.REINTERPRET_F64 (1.0)", f64, 1.0, i64, 0x3FF0000000000000ULL);
     return failures;
 }
-
-// Test for f32.reinterpret_i32: (module (func (param i32) (result f32) (f32.reinterpret_i32 (local.get 0))))
-const uint8_t f32_reinterpret_i32_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i32) -> f32)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7f, // 1 param (i32)
-            0x01, 0x7d, // 1 result (f32)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 BE 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xBE, // f32.reinterpret_i32
-            0x0b // end
-};
 
 int test_f32_reinterpret_i32() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7f, 0x7d, 0xbe);
 
     printf("\n=== Testing F32.REINTERPRET_I32 ===\n");
-    params[0].i32 = 0x3F800000;
-    failures += run_test_f32("F32.REINTERPRET_I32 (0x3F800000)", f32_reinterpret_i32_test_wasm, params, 1.0f, false);
-
+    CHECK_UNARY("F32.REINTERPRET_I32 (0x3F800000)", i32, 0x3F800000, f32, 1.0f);
     return failures;
 }
 
-// Test for f64.reinterpret_i64: (module (func (param i64) (result f64) (f64.reinterpret_i64 (local.get 0))))
-const uint8_t f64_reinterpret_i64_test_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section (1 type: func(i64) -> f64)
-    0x01, 0x06, // section id (1), size (6)
-        0x01, // count (1 function type)
-            0x60, // func type
-            0x01, 0x7e, // 1 param (i64)
-            0x01, 0x7c, // 1 result (f64)
-
-    // Function section (1 function, type index 0)
-    0x03, 0x02, // section id (3), size (2)
-        0x01, // count (1 function)
-            0x00, // function type index (0)
-
-    // Code section (1 code body)
-    0x0a, 0x07, // section id (10), size (7)
-        0x01, // count (1 code body)
-            0x05, // code body size (LEB128) - 0 locals + 4 instructions (20 00 BF 0B)
-            0x00, // local count (0)
-            0x20, 0x00, // local.get 0
-            0xBF, // f64.reinterpret_i64
-            0x0b // end
-};
-
 int test_f64_reinterpret_i64() {
     int failures = 0;
-    wah_value_t params[1];
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7e, 0x7c, 0xbf);
 
     printf("\n=== Testing F64.REINTERPRET_I64 ===\n");
-    params[0].i64 = 0x3FF0000000000000ULL;
-    failures += run_test_f64("F64.REINTERPRET_I64 (0x3FF0000000000000)", f64_reinterpret_i64_test_wasm, params, 1.0, false);
+    CHECK_UNARY("F64.REINTERPRET_I64 (0x3FF0000000000000)", i64, 0x3FF0000000000000ULL, f64, 1.0);
+    return failures;
+}
 
+int test_i32_trunc_sat_f32_s() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM_FC(0x7d, 0x7f, 0x00);
+
+    printf("\n=== Testing I32.TRUNC_SAT_F32_S ===\n");
+    CHECK_UNARY("I32.TRUNC_SAT_F32_S (10.5f)", f32, 10.5f, i32, 10);
+    CHECK_UNARY("I32.TRUNC_SAT_F32_S (-10.5f)", f32, -10.5f, i32, -10);
+    CHECK_UNARY("I32.TRUNC_SAT_F32_S (NaN)", f32, NAN, i32, 0); // NaN should result in 0
+    CHECK_UNARY("I32.TRUNC_SAT_F32_S (Infinity)", f32, INFINITY, i32, INT32_MAX); // Positive Infinity should saturate to INT32_MAX
+    CHECK_UNARY("I32.TRUNC_SAT_F32_S (-Infinity)", f32, -INFINITY, i32, INT32_MIN); // Negative Infinity should saturate to INT32_MIN
+    CHECK_UNARY("I32.TRUNC_SAT_F32_S (too large)", f32, 2147483648.0f /*INT32_MAX + 1*/, i32, INT32_MAX); // Value greater than INT32_MAX should saturate to INT32_MAX
+    CHECK_UNARY("I32.TRUNC_SAT_F32_S (too small)", f32, -2147483649.0f /*INT32_MIN - 1*/, i32, INT32_MIN); // Value less than INT32_MIN should saturate to INT32_MIN
+    return failures;
+}
+
+int test_i32_trunc_sat_f32_u() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM_FC(0x7d, 0x7f, 0x01);
+
+    printf("\n=== Testing I32.TRUNC_SAT_F32_U ===\n");
+    CHECK_UNARY("I32.TRUNC_SAT_F32_U (10.5f)", f32, 10.5f, i32, 10);
+    CHECK_UNARY("I32.TRUNC_SAT_F32_U (NaN)", f32, NAN, i32, 0); // NaN should result in 0
+    CHECK_UNARY("I32.TRUNC_SAT_F32_U (Infinity)", f32, INFINITY, i32, (int32_t)UINT32_MAX); // Positive Infinity should saturate to UINT32_MAX
+    CHECK_UNARY("I32.TRUNC_SAT_F32_U (-Infinity)", f32, -INFINITY, i32, 0); // Negative Infinity should saturate to 0
+    CHECK_UNARY("I32.TRUNC_SAT_F32_U (too large)", f32, 4294967296.0f /*UINT32_MAX + 1*/, i32, (int32_t)UINT32_MAX); // Value greater than UINT32_MAX should saturate to UINT32_MAX
+    CHECK_UNARY("I32.TRUNC_SAT_F32_U (negative)", f32, -0.5f, i32, 0); // Value less than 0 should saturate to 0
+    return failures;
+}
+
+int test_i32_trunc_sat_f64_s() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM_FC(0x7c, 0x7f, 0x02);
+
+    printf("\n=== Testing I32.TRUNC_SAT_F64_S ===\n");
+    CHECK_UNARY("I32.TRUNC_SAT_F64_S (10.5)", f64, 10.5, i32, 10);
+    CHECK_UNARY("I32.TRUNC_SAT_F64_S (-10.5)", f64, -10.5, i32, -10);
+    CHECK_UNARY("I32.TRUNC_SAT_F64_S (NaN)", f64, NAN, i32, 0); // NaN should result in 0
+    CHECK_UNARY("I32.TRUNC_SAT_F64_S (Infinity)", f64, INFINITY, i32, INT32_MAX); // Positive Infinity should saturate to INT32_MAX
+    CHECK_UNARY("I32.TRUNC_SAT_F64_S (-Infinity)", f64, -INFINITY, i32, INT32_MIN); // Negative Infinity should saturate to INT32_MIN
+    CHECK_UNARY("I32.TRUNC_SAT_F64_S (too large)", f64, 2147483648.0 /*INT32_MAX + 1*/, i32, INT32_MAX); // Value greater than INT32_MAX should saturate to INT32_MAX
+    CHECK_UNARY("I32.TRUNC_SAT_F64_S (too small)", f64, -2147483649.0 /*INT32_MIN - 1*/, i32, INT32_MIN); // Value less than INT32_MIN should saturate to INT32_MIN
+    return failures;
+}
+
+int test_i32_trunc_sat_f64_u() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM_FC(0x7c, 0x7f, 0x03);
+
+    printf("\n=== Testing I32.TRUNC_SAT_F64_U ===\n");
+    CHECK_UNARY("I32.TRUNC_SAT_F64_U (10.5)", f64, 10.5, i32, 10);
+    CHECK_UNARY("I32.TRUNC_SAT_F64_U (NaN)", f64, NAN, i32, 0); // NaN should result in 0
+    CHECK_UNARY("I32.TRUNC_SAT_F64_U (Infinity)", f64, INFINITY, i32, (int32_t)UINT32_MAX); // Positive Infinity should saturate to UINT32_MAX
+    CHECK_UNARY("I32.TRUNC_SAT_F64_U (-Infinity)", f64, -INFINITY, i32, 0); // Negative Infinity should saturate to 0
+    CHECK_UNARY("I32.TRUNC_SAT_F64_U (too large)", f64, 4294967296.0 /*UINT32_MAX + 1*/, i32, (int32_t)UINT32_MAX); // Value greater than UINT32_MAX should saturate to UINT32_MAX
+    CHECK_UNARY("I32.TRUNC_SAT_F64_U (negative)", f64, -0.5, i32, 0); // Value less than 0 should saturate to 0
+    return failures;
+}
+
+int test_i64_trunc_sat_f32_s() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM_FC(0x7d, 0x7e, 0x04);
+
+    printf("\n=== Testing I64.TRUNC_SAT_F32_S ===\n");
+    CHECK_UNARY("I64.TRUNC_SAT_F32_S (10.5f)", f32, 10.5f, i64, 10LL);
+    CHECK_UNARY("I64.TRUNC_SAT_F32_S (-10.5f)", f32, -10.5f, i64, -10LL);
+    CHECK_UNARY("I64.TRUNC_SAT_F32_S (NaN)", f32, NAN, i64, 0LL); // NaN should result in 0
+    CHECK_UNARY("I64.TRUNC_SAT_F32_S (Infinity)", f32, INFINITY, i64, INT64_MAX); // Positive Infinity should saturate to INT64_MAX
+    CHECK_UNARY("I64.TRUNC_SAT_F32_S (-Infinity)", f32, -INFINITY, i64, INT64_MIN); // Negative Infinity should saturate to INT64_MIN
+    CHECK_UNARY("I64.TRUNC_SAT_F32_S (too large)", f32, (float)INT64_MAX + 100.0f, i64, INT64_MAX); // Value greater than INT64_MAX should saturate to INT64_MAX
+    CHECK_UNARY("I64.TRUNC_SAT_F32_S (too small)", f32, (float)INT64_MIN - 100.0f, i64, INT64_MIN); // Value less than INT64_MIN should saturate to INT64_MIN
+    return failures;
+}
+
+int test_i64_trunc_sat_f32_u() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM_FC(0x7d, 0x7e, 0x05);
+
+    printf("\n=== Testing I64.TRUNC_SAT_F32_U ===\n");
+    CHECK_UNARY("I64.TRUNC_SAT_F32_U (10.5f)", f32, 10.5f, i64, 10ULL);
+    CHECK_UNARY("I64.TRUNC_SAT_F32_U (NaN)", f32, NAN, i64, 0ULL); // NaN should result in 0
+    CHECK_UNARY("I64.TRUNC_SAT_F32_U (Infinity)", f32, INFINITY, i64, (int64_t)UINT64_MAX); // Positive Infinity should saturate to UINT64_MAX
+    CHECK_UNARY("I64.TRUNC_SAT_F32_U (-Infinity)", f32, -INFINITY, i64, 0ULL); // Negative Infinity should saturate to 0
+    CHECK_UNARY("I64.TRUNC_SAT_F32_U (too large)", f32, (float)UINT64_MAX + 100.0f, i64, (int64_t)UINT64_MAX); // Value greater than UINT64_MAX should saturate to UINT64_MAX
+    CHECK_UNARY("I64.TRUNC_SAT_F32_U (negative)", f32, -0.5f, i64, 0ULL); // Value less than 0 should saturate to 0
+    return failures;
+}
+
+int test_i64_trunc_sat_f64_s() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM_FC(0x7c, 0x7e, 0x06);
+
+    printf("\n=== Testing I64.TRUNC_SAT_F64_S ===\n");
+    CHECK_UNARY("I64.TRUNC_SAT_F64_S (10.5)", f64, 10.5, i64, 10LL);
+    CHECK_UNARY("I64.TRUNC_SAT_F64_S (-10.5)", f64, -10.5, i64, -10LL);
+    CHECK_UNARY("I64.TRUNC_SAT_F64_S (NaN)", f64, NAN, i64, 0LL); // NaN should result in 0
+    CHECK_UNARY("I64.TRUNC_SAT_F64_S (Infinity)", f64, INFINITY, i64, INT64_MAX); // Positive Infinity should saturate to INT64_MAX
+    CHECK_UNARY("I64.TRUNC_SAT_F64_S (-Infinity)", f64, -INFINITY, i64, INT64_MIN); // Negative Infinity should saturate to INT64_MIN
+    CHECK_UNARY("I64.TRUNC_SAT_F64_S (too large)", f64, (double)INT64_MAX + 100.0, i64, INT64_MAX); // Value greater than INT64_MAX should saturate to INT64_MAX
+    CHECK_UNARY("I64.TRUNC_SAT_F64_S (too small)", f64, (double)INT64_MIN - 100.0, i64, INT64_MIN); // Value less than INT64_MIN should saturate to INT64_MIN
+    return failures;
+}
+
+int test_i64_trunc_sat_f64_u() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM_FC(0x7c, 0x7e, 0x07);
+
+    printf("\n=== Testing I64.TRUNC_SAT_F64_U ===\n");
+    CHECK_UNARY("I64.TRUNC_SAT_F64_U (10.5)", f64, 10.5, i64, 10ULL);
+    CHECK_UNARY("I64.TRUNC_SAT_F64_U (NaN)", f64, NAN, i64, 0ULL); // NaN should result in 0
+    CHECK_UNARY("I64.TRUNC_SAT_F64_U (Infinity)", f64, INFINITY, i64, (int64_t)UINT64_MAX); // Positive Infinity should saturate to UINT64_MAX
+    CHECK_UNARY("I64.TRUNC_SAT_F64_U (-Infinity)", f64, -INFINITY, i64, 0ULL); // Negative Infinity should saturate to 0
+    CHECK_UNARY("I64.TRUNC_SAT_F64_U (too large)", f64, (double)UINT64_MAX + 100.0, i64, (int64_t)UINT64_MAX); // Value greater than UINT64_MAX should saturate to UINT64_MAX
+    CHECK_UNARY("I64.TRUNC_SAT_F64_U (negative)", f64, -0.5, i64, 0ULL); // Value less than 0 should saturate to 0
     return failures;
 }
 
@@ -1451,6 +606,16 @@ int main() {
     total_failures += test_i64_reinterpret_f64();
     total_failures += test_f32_reinterpret_i32();
     total_failures += test_f64_reinterpret_i64();
+
+    total_failures += test_i32_trunc_sat_f32_s();
+    total_failures += test_i32_trunc_sat_f32_u();
+    total_failures += test_i32_trunc_sat_f64_s();
+    total_failures += test_i32_trunc_sat_f64_u();
+
+    total_failures += test_i64_trunc_sat_f32_s();
+    total_failures += test_i64_trunc_sat_f32_u();
+    total_failures += test_i64_trunc_sat_f64_s();
+    total_failures += test_i64_trunc_sat_f64_u();
 
     if (total_failures > 0) {
         printf("\nSUMMARY: %d test(s) FAILED!\n", total_failures);
