@@ -128,7 +128,7 @@ int test_basic_exports() {
 
     err = wah_module_export(&module, 1, &entry);
     TEST_ASSERT_WAH_OK(err, "Failed to get export 1");
-    TEST_ASSERT_EQ(entry.type, WAH_VAL_TYPE_I32, "Export 1 type mismatch");
+    TEST_ASSERT_EQ(entry.type, WAH_TYPE_I32, "Export 1 type mismatch");
     TEST_ASSERT(WAH_TYPE_IS_GLOBAL(entry.type), "WAH_TYPE_IS_GLOBAL failed for Export 1");
     TEST_ASSERT_EQ(WAH_GET_ENTRY_KIND(entry.id), WAH_ENTRY_KIND_GLOBAL, "Export 1 ID kind mismatch");
     TEST_ASSERT_EQ(WAH_GET_ENTRY_INDEX(entry.id), 0, "Export 1 ID index mismatch");
@@ -159,7 +159,7 @@ int test_basic_exports() {
 
     err = wah_module_export_by_name(&module, "g", &entry);
     TEST_ASSERT_WAH_OK(err, "Failed to get export by name 'g'");
-    TEST_ASSERT_EQ(entry.type, WAH_VAL_TYPE_I32, "Export by name 'g' type mismatch");
+    TEST_ASSERT_EQ(entry.type, WAH_TYPE_I32, "Export by name 'g' type mismatch");
     TEST_ASSERT(WAH_TYPE_IS_GLOBAL(entry.type), "WAH_TYPE_IS_GLOBAL failed for Export by name 'g'");
     TEST_ASSERT_STREQ(entry.name, "g", "Export by name 'g' name mismatch");
 
