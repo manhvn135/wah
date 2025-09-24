@@ -24,11 +24,26 @@ typedef enum {
     WAH_ERROR_MISUSE,
 } wah_error_t;
 
+// 128-bit vector type
+typedef union {
+    uint8_t u8[16];
+    uint16_t u16[8];
+    uint32_t u32[4];
+    uint64_t u64[2];
+    int8_t i8[16];
+    int16_t i16[8];
+    int32_t i32[4];
+    int64_t i64[2];
+    float f32[4];
+    double f64[2];
+} wah_v128_t;
+
 typedef union {
     int32_t i32;
     int64_t i64;
     float f32;
     double f64;
+    wah_v128_t v128;
 } wah_value_t;
 
 typedef int32_t wah_type_t;
@@ -37,11 +52,12 @@ typedef int32_t wah_type_t;
 #define WAH_TYPE_I64 -2
 #define WAH_TYPE_F32 -3
 #define WAH_TYPE_F64 -4
+#define WAH_TYPE_V128 -5
 
 #define WAH_TYPE_IS_FUNCTION(t) ((t) == -100)
 #define WAH_TYPE_IS_MEMORY(t)   ((t) == -200)
 #define WAH_TYPE_IS_TABLE(t)    ((t) == -300)
-#define WAH_TYPE_IS_GLOBAL(t)   ((t) >= -4)
+#define WAH_TYPE_IS_GLOBAL(t)   ((t) >= -5)
 
 typedef uint64_t wah_entry_id_t;
 
@@ -229,7 +245,7 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #define WAH_TYPE_TABLE    -300
 
 #define WAH_TYPE_FUNCREF WAH_TYPE_FUNCTION
-#define WAH_TYPE_ANY -5
+#define WAH_TYPE_ANY -99
 
 #define WAH_ENTRY_KIND_FUNCTION 0
 #define WAH_ENTRY_KIND_TABLE    1
@@ -264,11 +280,13 @@ typedef enum {
     WAH_OP_I32_STORE = 0x36, WAH_OP_I64_STORE = 0x37, WAH_OP_F32_STORE = 0x38, WAH_OP_F64_STORE = 0x39,
     WAH_OP_I32_STORE8 = 0x3A, WAH_OP_I32_STORE16 = 0x3B,
     WAH_OP_I64_STORE8 = 0x3C, WAH_OP_I64_STORE16 = 0x3D, WAH_OP_I64_STORE32 = 0x3E,
+    WAH_OP_V128_LOAD = 0xD000, WAH_OP_V128_STORE = 0xD00B,
     WAH_OP_MEMORY_SIZE = 0x3F, WAH_OP_MEMORY_GROW = 0x40,
     WAH_OP_MEMORY_INIT = 0xC008, WAH_OP_MEMORY_COPY = 0xC00A, WAH_OP_MEMORY_FILL = 0xC00B,
 
     // Constants
     WAH_OP_I32_CONST = 0x41, WAH_OP_I64_CONST = 0x42, WAH_OP_F32_CONST = 0x43, WAH_OP_F64_CONST = 0x44,
+    WAH_OP_V128_CONST = 0xD00C,
 
     // Comparison Operators
     WAH_OP_I32_EQZ = 0x45, WAH_OP_I32_EQ = 0x46, WAH_OP_I32_NE = 0x47,
@@ -1135,8 +1153,6 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         for (uint32_t j = 0; j < param_count_type; ++j) {
             wah_type_t type;
             WAH_CHECK(wah_decode_val_type(ptr, section_end, &type));
-            WAH_ENSURE(type == WAH_TYPE_I32 || type == WAH_TYPE_I64 ||
-                       type == WAH_TYPE_F32 || type == WAH_TYPE_F64, WAH_ERROR_VALIDATION_FAILED);
             module->types[i].param_types[j] = type;
         }
 
@@ -1151,8 +1167,6 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         for (uint32_t j = 0; j < result_count_type; ++j) {
             wah_type_t type;
             WAH_CHECK(wah_decode_val_type(ptr, section_end, &type));
-            WAH_ENSURE(type == WAH_TYPE_I32 || type == WAH_TYPE_I64 ||
-                       type == WAH_TYPE_F32 || type == WAH_TYPE_F64, WAH_ERROR_VALIDATION_FAILED);
             module->types[i].result_types[j] = type;
         }
     }
@@ -1214,6 +1228,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_I64_STORE8: STORE_OP(I64, 0)
         case WAH_OP_I64_STORE16: STORE_OP(I64, 1)
         case WAH_OP_I64_STORE32: STORE_OP(I64, 2)
+        case WAH_OP_V128_LOAD: LOAD_OP(V128, 4)
+        case WAH_OP_V128_STORE: STORE_OP(V128, 4)
 
 #undef LOAD_OP
 #undef STORE_OP
@@ -1372,6 +1388,11 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(code_end - *code_ptr >= 8, WAH_ERROR_UNEXPECTED_EOF);
             *code_ptr += 8;
             return wah_validation_push_type(vctx, WAH_TYPE_F64);
+        }
+        case WAH_OP_V128_CONST: {
+            WAH_ENSURE(code_end - *code_ptr >= 16, WAH_ERROR_UNEXPECTED_EOF);
+            *code_ptr += 16;
+            return wah_validation_push_type(vctx, WAH_TYPE_V128);
         }
 
 #define NUM_OPS(N) \
@@ -2307,17 +2328,19 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             }
             case WAH_OP_F32_CONST: ptr += 4; preparsed_instr_size += 4; break;
             case WAH_OP_F64_CONST: ptr += 8; preparsed_instr_size += 8; break;
+            case WAH_OP_V128_CONST: ptr += 16; preparsed_instr_size += 16; break;
 
             case WAH_OP_I32_LOAD: case WAH_OP_I64_LOAD: case WAH_OP_F32_LOAD: case WAH_OP_F64_LOAD:
             case WAH_OP_I32_LOAD8_S: case WAH_OP_I32_LOAD8_U: case WAH_OP_I32_LOAD16_S: case WAH_OP_I32_LOAD16_U:
             case WAH_OP_I64_LOAD8_S: case WAH_OP_I64_LOAD8_U: case WAH_OP_I64_LOAD16_S: case WAH_OP_I64_LOAD16_U:
             case WAH_OP_I64_LOAD32_S: case WAH_OP_I64_LOAD32_U:
             case WAH_OP_I32_STORE: case WAH_OP_I64_STORE: case WAH_OP_F32_STORE: case WAH_OP_F64_STORE:
-            case WAH_OP_I32_STORE8: case WAH_OP_I32_STORE16: case WAH_OP_I64_STORE8: case WAH_OP_I64_STORE16: case WAH_OP_I64_STORE32: {
+            case WAH_OP_I32_STORE8: case WAH_OP_I32_STORE16: case WAH_OP_I64_STORE8: case WAH_OP_I64_STORE16: case WAH_OP_I64_STORE32:
+            case WAH_OP_V128_LOAD: case WAH_OP_V128_STORE: {
                 uint32_t a, o;
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &o), cleanup);
-                preparsed_instr_size += sizeof(uint32_t);
+                preparsed_instr_size += sizeof(uint32_t); // For offset (ignore align)
                 break;
             }
             case WAH_OP_MEMORY_SIZE: case WAH_OP_MEMORY_GROW: case WAH_OP_MEMORY_FILL: {
@@ -2446,13 +2469,15 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             }
             case WAH_OP_F32_CONST: memcpy(write_ptr, ptr, 4); ptr += 4; write_ptr += 4; break;
             case WAH_OP_F64_CONST: memcpy(write_ptr, ptr, 8); ptr += 8; write_ptr += 8; break;
+            case WAH_OP_V128_CONST: memcpy(write_ptr, ptr, 16); ptr += 16; write_ptr += 16; break;
 
             case WAH_OP_I32_LOAD: case WAH_OP_I64_LOAD: case WAH_OP_F32_LOAD: case WAH_OP_F64_LOAD:
             case WAH_OP_I32_LOAD8_S: case WAH_OP_I32_LOAD8_U: case WAH_OP_I32_LOAD16_S: case WAH_OP_I32_LOAD16_U:
             case WAH_OP_I64_LOAD8_S: case WAH_OP_I64_LOAD8_U: case WAH_OP_I64_LOAD16_S: case WAH_OP_I64_LOAD16_U:
             case WAH_OP_I64_LOAD32_S: case WAH_OP_I64_LOAD32_U:
             case WAH_OP_I32_STORE: case WAH_OP_I64_STORE: case WAH_OP_F32_STORE: case WAH_OP_F64_STORE:
-            case WAH_OP_I32_STORE8: case WAH_OP_I32_STORE16: case WAH_OP_I64_STORE8: case WAH_OP_I64_STORE16: case WAH_OP_I64_STORE32: {
+            case WAH_OP_I32_STORE8: case WAH_OP_I32_STORE16: case WAH_OP_I64_STORE8: case WAH_OP_I64_STORE16: case WAH_OP_I64_STORE32:
+            case WAH_OP_V128_LOAD: case WAH_OP_V128_STORE: {
                 uint32_t a, o;
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &o), cleanup);
@@ -2528,6 +2553,7 @@ static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, 
         case 0x7E: *out_type = WAH_TYPE_I64; return WAH_OK;
         case 0x7D: *out_type = WAH_TYPE_F32; return WAH_OK;
         case 0x7C: *out_type = WAH_TYPE_F64; return WAH_OK;
+        case 0x7B: *out_type = WAH_TYPE_V128; return WAH_OK;
         default: return WAH_ERROR_VALIDATION_FAILED; // Unknown value type
     }
 }
@@ -2824,6 +2850,11 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             case WAH_OP_F64_CONST: {
                 ctx->value_stack[ctx->sp++].f64 = wah_canonicalize_f64(wah_read_f64_le(bytecode_ip));
                 bytecode_ip += sizeof(double);
+                break;
+            }
+            case WAH_OP_V128_CONST: {
+                memcpy(&ctx->value_stack[ctx->sp++].v128, bytecode_ip, sizeof(wah_v128_t));
+                bytecode_ip += sizeof(wah_v128_t);
                 break;
             }
             case WAH_OP_LOCAL_GET: {
@@ -3272,6 +3303,27 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 
             case WAH_OP_NOP: break;
             case WAH_OP_UNREACHABLE: err = WAH_ERROR_TRAP; goto cleanup;
+
+            // --- Vector instructions ---
+            case WAH_OP_V128_LOAD: {
+                uint32_t offset = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
+                uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+                uint32_t effective_addr = addr + offset;
+                WAH_ENSURE_GOTO(effective_addr + sizeof(wah_v128_t) <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+                memcpy(&ctx->value_stack[ctx->sp++].v128, ctx->memory_base + effective_addr, sizeof(wah_v128_t));
+                break;
+            }
+            case WAH_OP_V128_STORE: {
+                uint32_t offset = wah_read_u32_le(bytecode_ip);
+                bytecode_ip += sizeof(uint32_t);
+                wah_v128_t val = ctx->value_stack[--ctx->sp].v128;
+                uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+                uint32_t effective_addr = addr + offset;
+                WAH_ENSURE_GOTO(effective_addr + sizeof(wah_v128_t) <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+                memcpy(ctx->memory_base + effective_addr, &val, sizeof(wah_v128_t));
+                break;
+            }
 
             default:
                 err = WAH_ERROR_UNKNOWN_SECTION;
