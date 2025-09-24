@@ -2619,6 +2619,8 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
     exec_ctx->call_depth = 0;
 
     if (module->memory_count > 0) {
+        // Check for potential overflow before calculating memory_size
+        WAH_ENSURE_GOTO(module->memories[0].min_pages <= UINT32_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE, cleanup);
         exec_ctx->memory_size = module->memories[0].min_pages * WAH_WASM_PAGE_SIZE;
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->memory_base, exec_ctx->memory_size, cleanup);
         memset(exec_ctx->memory_base, 0, exec_ctx->memory_size);
@@ -3163,6 +3165,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                     memset(ctx->memory_base + ctx->memory_size, 0, new_memory_size - ctx->memory_size);
                 }
 
+                WAH_ENSURE_GOTO(new_memory_size <= UINT32_MAX, WAH_ERROR_TOO_LARGE, cleanup);
                 ctx->memory_size = (uint32_t)new_memory_size;
                 ctx->value_stack[ctx->sp++].i32 = (int32_t)old_pages;
                 break;
