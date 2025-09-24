@@ -19,6 +19,8 @@ typedef enum {
     WAH_ERROR_TRAP,
     WAH_ERROR_CALL_STACK_OVERFLOW,
     WAH_ERROR_MEMORY_OUT_OF_BOUNDS,
+    WAH_ERROR_NOT_FOUND,
+    WAH_ERROR_MISUSE,
 } wah_error_t;
 
 typedef union {
@@ -27,6 +29,27 @@ typedef union {
     float f32;
     double f64;
 } wah_value_t;
+
+typedef int64_t wah_type_t;
+
+#define WAH_TYPE_I32 -1
+#define WAH_TYPE_I64 -2
+#define WAH_TYPE_F32 -3
+#define WAH_TYPE_F64 -4
+
+#define WAH_TYPE_IS_FUNCTION(t) ((t) == -100)
+#define WAH_TYPE_IS_MEMORY(t)   ((t) == -200)
+#define WAH_TYPE_IS_TABLE(t)    ((t) == -300)
+#define WAH_TYPE_IS_GLOBAL(t)   ((t) >= -4)
+
+typedef uint64_t wah_entry_id_t;
+
+typedef struct {
+    wah_entry_id_t id;
+    wah_type_t type;
+    const char *name;
+    size_t name_len;
+} wah_entry_t;
 
 typedef struct wah_module_s {
     uint32_t type_count;
@@ -37,6 +60,7 @@ typedef struct wah_module_s {
     uint32_t table_count;
     uint32_t element_segment_count;
     uint32_t data_segment_count;
+    uint32_t export_count;
 
     uint32_t start_function_idx;
     bool has_start_function;
@@ -51,6 +75,7 @@ typedef struct wah_module_s {
     struct wah_table_type_s *tables;
     struct wah_element_segment_s *element_segments;
     struct wah_data_segment_s *data_segments;
+    struct wah_export_s *exports;
 } wah_module_t;
 
 typedef struct wah_exec_context_s {
@@ -81,6 +106,12 @@ typedef struct wah_exec_context_s {
 const char *wah_strerror(wah_error_t err);
 
 wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah_module_t *module);
+
+size_t wah_module_num_exports(const wah_module_t *module);
+wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_t *out);
+wah_error_t wah_module_export_by_name(const wah_module_t *module, const char *name, wah_entry_t *out);
+
+wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
 
 // Creates and initializes an execution context.
 wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module);
@@ -113,6 +144,19 @@ void wah_free_module(wah_module_t *module);
 #else
 #define WAH_LOG(fmt, ...) (void)(0)
 #endif
+
+#define WAH_TYPE_FUNCTION -100
+#define WAH_TYPE_MEMORY   -200
+#define WAH_TYPE_TABLE    -300
+
+#define WAH_ENTRY_KIND_FUNCTION 0
+#define WAH_ENTRY_KIND_TABLE    1
+#define WAH_ENTRY_KIND_MEMORY   2
+#define WAH_ENTRY_KIND_GLOBAL   3
+
+#define WAH_MAKE_ENTRY_ID(kind, index) (((wah_entry_id_t)(kind) << 32) | (index))
+#define WAH_GET_ENTRY_KIND(id)         ((uint32_t)((id) >> 32))
+#define WAH_GET_ENTRY_INDEX(id)        ((uint32_t)((id) & 0xFFFFFFFF))
 
 // --- WebAssembly Types ---
 typedef enum {
@@ -228,6 +272,13 @@ typedef struct wah_data_segment_s {
     uint32_t data_len;
     const uint8_t *data; // Pointer to the raw data bytes within the WASM binary
 } wah_data_segment_t;
+
+typedef struct wah_export_s {
+    const char *name;
+    size_t name_len;
+    uint8_t kind; // WASM export kind (0=func, 1=table, 2=mem, 3=global)
+    uint32_t index; // Index into the respective module array (functions, tables, etc.)
+} wah_export_t;
 
 // --- WebAssembly Element Segment Structure ---
 typedef struct wah_element_segment_s {
@@ -431,6 +482,8 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_TRAP: return "Runtime trap";
         case WAH_ERROR_CALL_STACK_OVERFLOW: return "Call stack overflow";
         case WAH_ERROR_MEMORY_OUT_OF_BOUNDS: return "Memory access out of bounds";
+        case WAH_ERROR_NOT_FOUND: return "Item not found";
+        case WAH_ERROR_MISUSE: return "API misused: invalid arguments";
         default: return "Unknown error";
     }
 }
@@ -524,6 +577,40 @@ static inline wah_error_t wah_decode_sleb128_64(const uint8_t **ptr, const uint8
     }
     *result = (int64_t)val;
     return WAH_OK;
+}
+
+// Helper function to validate if a byte sequence is valid UTF-8
+static inline bool wah_is_valid_utf8(const char *s, size_t len) {
+    const unsigned char *bytes = (const unsigned char *)s;
+    size_t i = 0;
+    while (i < len) {
+        unsigned char byte = bytes[i];
+        if (byte < 0x80) { // 1-byte sequence (0xxxxxxx)
+            i++;
+            continue;
+        }
+        if ((byte & 0xE0) == 0xC0) { // 2-byte sequence (110xxxxx 10xxxxxx)
+            if (i + 1 >= len || (bytes[i+1] & 0xC0) != 0x80 || (byte & 0xFE) == 0xC0) return false; // Overlong encoding
+            i += 2;
+            continue;
+        }
+        if ((byte & 0xF0) == 0xE0) { // 3-byte sequence (1110xxxx 10xxxxxx 10xxxxxx)
+            if (i + 2 >= len || (bytes[i+1] & 0xC0) != 0x80 || (bytes[i+2] & 0xC0) != 0x80 ||
+                (byte == 0xE0 && bytes[i+1] < 0xA0) || // Overlong encoding
+                (byte == 0xED && bytes[i+1] >= 0xA0)) return false; // Surrogate pair
+            i += 3;
+            continue;
+        }
+        if ((byte & 0xF8) == 0xF0) { // 4-byte sequence (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx)
+            if (i + 3 >= len || (bytes[i+1] & 0xC0) != 0x80 || (bytes[i+2] & 0xC0) != 0x80 || (bytes[i+3] & 0xC0) != 0x80 ||
+                (byte == 0xF0 && bytes[i+1] < 0x90) || // Overlong encoding
+                (byte == 0xF4 && bytes[i+1] >= 0x90)) return false; // Codepoint > 0x10FFFF
+            i += 4;
+            continue;
+        }
+        return false; // Invalid start byte
+    }
+    return true;
 }
 
 // Helper to read a uint8_t from a byte array in little-endian format
@@ -1814,7 +1901,85 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
 }
 
 static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
-    return wah_parse_unimplemented_section(ptr, section_end, module);
+    wah_error_t err = WAH_OK;
+    uint32_t count;
+    WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &count), cleanup);
+
+    module->export_count = count;
+    WAH_MALLOC_ARRAY_GOTO(module->exports, count, cleanup);
+    memset(module->exports, 0, sizeof(wah_export_t) * count);
+
+    for (uint32_t i = 0; i < count; ++i) {
+        wah_export_t *export_entry = &module->exports[i];
+
+        // Name length
+        uint32_t name_len;
+        WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &name_len), cleanup);
+        export_entry->name_len = name_len;
+
+        // Name string
+        WAH_ENSURE_GOTO(*ptr + name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
+
+        // Allocate memory for the name and copy it, ensuring null-termination
+        WAH_MALLOC_ARRAY_GOTO(export_entry->name, name_len + 1, cleanup);
+        memcpy((void*)export_entry->name, *ptr, name_len);
+        ((char*)export_entry->name)[name_len] = '\0';
+
+        WAH_ENSURE_GOTO(wah_is_valid_utf8(export_entry->name, export_entry->name_len), WAH_ERROR_VALIDATION_FAILED, cleanup);
+
+        // Check for duplicate export names
+        for (uint32_t j = 0; j < i; ++j) {
+            if (module->exports[j].name_len == export_entry->name_len &&
+                strncmp(module->exports[j].name, export_entry->name, export_entry->name_len) == 0) {
+                err = WAH_ERROR_VALIDATION_FAILED; // Duplicate export name
+                goto cleanup;
+            }
+        }
+
+        *ptr += name_len;
+
+        // Export kind
+        WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
+        export_entry->kind = *(*ptr)++;
+
+        // Export index
+        WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &export_entry->index), cleanup);
+
+        // Basic validation of index based on kind
+        switch (export_entry->kind) {
+            case 0: // Function
+                WAH_ENSURE_GOTO(export_entry->index < module->function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                break;
+            case 1: // Table
+                WAH_ENSURE_GOTO(export_entry->index < module->table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                break;
+            case 2: // Memory
+                WAH_ENSURE_GOTO(export_entry->index < module->memory_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                break;
+            case 3: // Global
+                WAH_ENSURE_GOTO(export_entry->index < module->global_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                break;
+            default:
+                err = WAH_ERROR_VALIDATION_FAILED; // Unknown export kind
+                goto cleanup;
+        }
+    }
+
+cleanup:
+    if (err != WAH_OK) {
+        if (module->exports) {
+            // Free names that were already allocated
+            for (uint32_t k = 0; k < count; ++k) {
+                if (module->exports[k].name) {
+                    free((void*)module->exports[k].name);
+                }
+            }
+            free(module->exports);
+            module->exports = NULL;
+            module->export_count = 0;
+        }
+    }
+    return err;
 }
 
 static wah_error_t wah_parse_start_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
@@ -3058,8 +3223,103 @@ void wah_free_module(wah_module_t *module) {
 
     free(module->data_segments); // Free data segments
 
+    if (module->exports) {
+        for (uint32_t i = 0; i < module->export_count; ++i) {
+            free((void*)module->exports[i].name);
+        }
+        free(module->exports); // Free exports
+    }
+
     // Reset all fields to 0/NULL
     memset(module, 0, sizeof(wah_module_t));
+}
+
+// --- Export API Implementation ---
+size_t wah_module_num_exports(const wah_module_t *module) {
+    if (!module) return 0;
+    return module->export_count;
+}
+
+wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_t *out) {
+    WAH_ENSURE(module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(out, WAH_ERROR_MISUSE);
+    WAH_ENSURE(idx < module->export_count, WAH_ERROR_NOT_FOUND);
+
+    const wah_export_t *export_entry = &module->exports[idx];
+    out->name = export_entry->name;
+    out->name_len = export_entry->name_len;
+
+    switch (export_entry->kind) {
+        case 0: // Function
+            out->type = WAH_TYPE_FUNCTION;
+            out->id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_FUNCTION, export_entry->index);
+            break;
+        case 1: // Table
+            out->type = WAH_TYPE_TABLE;
+            out->id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_TABLE, export_entry->index);
+            break;
+        case 2: // Memory
+            out->type = WAH_TYPE_MEMORY;
+            out->id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_MEMORY, export_entry->index);
+            break;
+        case 3: // Global
+            out->type = module->globals[export_entry->index].type;
+            out->id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_GLOBAL, export_entry->index);
+            break;
+        default:
+            return WAH_ERROR_VALIDATION_FAILED; // Should not happen if parsing is correct
+    }
+    return WAH_OK;
+}
+
+wah_error_t wah_module_export_by_name(const wah_module_t *module, const char *name, wah_entry_t *out) {
+    WAH_ENSURE(module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(name, WAH_ERROR_MISUSE);
+    WAH_ENSURE(out, WAH_ERROR_MISUSE);
+
+    size_t lookup_name_len = strlen(name);
+
+    for (uint32_t i = 0; i < module->export_count; ++i) {
+        const wah_export_t *export_entry = &module->exports[i];
+        if (export_entry->name_len == lookup_name_len && strncmp(export_entry->name, name, lookup_name_len) == 0) {
+            return wah_module_export(module, i, out);
+        }
+    }
+    return WAH_ERROR_NOT_FOUND;
+}
+
+wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out) {
+    WAH_ENSURE(module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(out, WAH_ERROR_MISUSE);
+
+    uint32_t kind = WAH_GET_ENTRY_KIND(entry_id);
+    uint32_t index = WAH_GET_ENTRY_INDEX(entry_id);
+
+    out->id = entry_id;
+    out->name = NULL; // No name for non-exported entries
+    out->name_len = 0;
+
+    switch (kind) {
+        case WAH_ENTRY_KIND_FUNCTION:
+            WAH_ENSURE(index < module->function_count, WAH_ERROR_NOT_FOUND);
+            out->type = WAH_TYPE_FUNCTION;
+            break;
+        case WAH_ENTRY_KIND_TABLE:
+            WAH_ENSURE(index < module->table_count, WAH_ERROR_NOT_FOUND);
+            out->type = WAH_TYPE_TABLE;
+            break;
+        case WAH_ENTRY_KIND_MEMORY:
+            WAH_ENSURE(index < module->memory_count, WAH_ERROR_NOT_FOUND);
+            out->type = WAH_TYPE_MEMORY;
+            break;
+        case WAH_ENTRY_KIND_GLOBAL:
+            WAH_ENSURE(index < module->global_count, WAH_ERROR_NOT_FOUND);
+            out->type = module->globals[index].type;
+            break;
+        default:
+            return WAH_ERROR_NOT_FOUND; // Unknown entry kind
+    }
+    return WAH_OK;
 }
 
 #endif // WAH_IMPLEMENTATION
