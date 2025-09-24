@@ -190,6 +190,113 @@ int test_function_section_no_code_section() {
     return 0;
 }
 
+// Test case for parsing a module with a data section but no datacount section,
+// and a code section using memory.init. This should fail validation currently.
+static int test_parse_data_no_datacount_memory_init_fails() {
+    printf("Running test_parse_data_no_datacount_memory_init_fails...\n");
+    const uint8_t wasm_binary[] = {
+        0x00, 0x61, 0x73, 0x6d, // Magic
+        0x01, 0x00, 0x00, 0x00, // Version
+
+        // Type section (1)
+        0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+
+        // Function section (3)
+        0x03, 0x02, 0x01, 0x00,
+
+        // Memory section (5)
+        0x05, 0x03, 0x01, 0x00, 0x01,
+
+        // Export section (7)
+        0x07, 0x16, 0x02, // Section ID, size, count
+        0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00, // Export "memory"
+        0x09, 't', 'e', 's', 't', '_', 'f', 'u', 'n', 'c', 0x00, 0x00, // Export "test_func"
+
+        // Code section (10)
+        0x0a, 0x0e, 0x01, // Section ID, size, count
+        0x0c, // Code size for func 0
+        0x00, // 0 locals
+        0x41, 0x00, // i32.const 0
+        0x41, 0x00, // i32.const 0
+        0x41, 0x05, // i32.const 5
+        0xfc, 0x08, 0x00, 0x00, // memory.init 0 0
+        0x0b, // end
+
+        // Data section (11)
+        0x0b, 0x0b, 0x01, // Section ID, size, count
+        0x00, // Flags (active, memory 0)
+        0x41, 0x00, 0x0b, // Offset expression (i32.const 0 end)
+        0x05, // Data length
+        'h', 'e', 'l', 'l', 'o' // Data bytes
+    };
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "ERROR: test_parse_data_no_datacount_memory_init_fails FAILED, but should have PASSED! Error: %s\n", wah_strerror(err));
+        exit(1);
+    }
+    wah_free_module(&module);
+    printf("test_parse_data_no_datacount_memory_init_fails passed (as expected, it passed validation).\n");
+    return 0;
+}
+
+// Test case for deferred data segment validation failure.
+// No datacount section, one data segment (index 0), but memory.init tries to use data_idx 1.
+static int test_deferred_data_validation_failure() {
+    printf("Running test_deferred_data_validation_failure...\n");
+    const uint8_t wasm_binary[] = {
+        0x00, 0x61, 0x73, 0x6d, // Magic
+        0x01, 0x00, 0x00, 0x00, // Version
+
+        // Type section (1)
+        0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+
+        // Function section (3)
+        0x03, 0x02, 0x01, 0x00,
+
+        // Memory section (5)
+        0x05, 0x03, 0x01, 0x00, 0x01,
+
+        // Export section (7)
+        0x07, 0x16, 0x02, // Section ID, size, count
+        0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00, // Export "memory"
+        0x09, 't', 'e', 's', 't', '_', 'f', 'u', 'n', 'c', 0x00, 0x00, // Export "test_func"
+
+        // Code section (10)
+        0x0a, 0x0e, 0x01, // Section ID, size, count
+        0x0c, // Code body size for func 0
+        0x00, // 0 locals
+        0x41, 0x00, // i32.const 0 (dest_offset)
+        0x41, 0x00, // i32.const 0 (src_offset)
+        0x41, 0x05, // i32.const 5 (size)
+        0xfc, 0x08, 0x01, 0x00, // memory.init data_idx=1, mem_idx=0 (data_idx 1 is out of bounds)
+        0x0b, // end
+
+        // Data section (11)
+        0x0b, 0x0b, 0x01, // Section ID, size, count (only 1 data segment)
+        0x00, // Flags (active, memory 0)
+        0x41, 0x00, 0x0b, // Offset expression (i32.const 0 end)
+        0x05, // Data length
+        'h', 'e', 'l', 'l', 'o' // Data bytes
+    };
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_deferred_data_validation_failure FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: Deferred data validation failure correctly detected.\n");
+    return 0;
+}
+
 int main(void) {
     int result = 0;
 
@@ -216,6 +323,8 @@ int main(void) {
     result |= test_invalid_element_segment_func_idx();
     result |= test_code_section_no_function_section();
     result |= test_function_section_no_code_section();
+    result |= test_parse_data_no_datacount_memory_init_fails();
+    result |= test_deferred_data_validation_failure();
 
     if (result == 0) {
         printf("All parser tests passed!\n");

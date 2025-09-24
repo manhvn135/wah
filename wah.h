@@ -38,6 +38,11 @@ typedef struct wah_module_s {
     uint32_t element_segment_count;
     uint32_t data_segment_count;
 
+    uint32_t start_function_idx;
+    bool has_start_function;
+    bool has_data_count_section; // True if data count section was present
+    uint32_t min_data_segment_count_required;
+
     struct wah_func_type_s *types;
     uint32_t *function_type_indices; // Index into the types array
     struct wah_code_body_s *code_bodies;
@@ -46,10 +51,6 @@ typedef struct wah_module_s {
     struct wah_table_type_s *tables;
     struct wah_element_segment_s *element_segments;
     struct wah_data_segment_s *data_segments;
-
-    uint32_t start_function_idx;
-    bool has_start_function;
-    bool has_data_count_section; // True if data count section was present
 } wah_module_t;
 
 typedef struct wah_exec_context_s {
@@ -309,7 +310,7 @@ typedef struct {
 typedef struct {
     wah_type_stack_t type_stack;
     const wah_func_type_t *func_type; // Type of the function being validated
-    const wah_module_t *module; // Reference to the module for global/function lookups
+    wah_module_t *module; // Reference to the module for global/function lookups
     uint32_t total_locals; // Total number of locals (params + declared locals)
     uint32_t current_stack_depth; // Current stack depth during validation
     uint32_t max_stack_depth; // Maximum stack depth seen during validation
@@ -1056,9 +1057,14 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &data_idx));
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &mem_idx));
             WAH_ENSURE(mem_idx == 0, WAH_ERROR_VALIDATION_FAILED); // Only memory 0 supported
-            WAH_ENSURE(data_idx < vctx->module->data_segment_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops size (i32)
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops offset (i32)
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops data segment offset (i32)
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_VAL_TYPE_I32)); // Pops memory offset (i32)
+
+            // Update min_data_segment_count_required
+            if (data_idx + 1 > vctx->module->min_data_segment_count_required) {
+                vctx->module->min_data_segment_count_required = data_idx + 1;
+            }
             return WAH_OK;
         }
         case WAH_OP_MEMORY_COPY: {
@@ -1858,7 +1864,15 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
 static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
-    module->data_segment_count = count;
+
+    // If a datacount section was present, validate that the data section count matches.
+    // Otherwise, set the data_segment_count from this section.
+    if (module->has_data_count_section) {
+        WAH_ENSURE(count == module->data_segment_count, WAH_ERROR_VALIDATION_FAILED);
+    } else {
+        module->data_segment_count = count;
+    }
+
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->data_segments, count);
         memset(module->data_segments, 0, sizeof(wah_data_segment_t) * count);
@@ -2254,7 +2268,6 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
     WAH_ENSURE(wasm_binary && module && binary_size >= 8, WAH_ERROR_UNEXPECTED_EOF);
 
     memset(module, 0, sizeof(wah_module_t)); // Initialize module struct
-    module->has_data_count_section = false;
 
     const uint8_t *ptr = wasm_binary;
     const uint8_t *end = wasm_binary + binary_size;
@@ -2301,6 +2314,9 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
 
     // After all sections are parsed, validate that function_count matches code_count
     WAH_ENSURE_GOTO(module->function_count == module->code_count, WAH_ERROR_VALIDATION_FAILED, cleanup_parse);
+
+    // Validate data segment references
+    WAH_ENSURE_GOTO(module->data_segment_count >= module->min_data_segment_count_required, WAH_ERROR_VALIDATION_FAILED, cleanup_parse);
 
     return WAH_OK;
 
@@ -2904,14 +2920,16 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 WAH_ENSURE_GOTO(data_idx < ctx->module->data_segment_count, WAH_ERROR_TRAP, cleanup);
 
                 uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-                uint32_t offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+                uint32_t src_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+                uint32_t dest_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
 
                 const wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
 
-                WAH_ENSURE_GOTO((uint64_t)offset + size <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+                WAH_ENSURE_GOTO((uint64_t)dest_offset + size <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+                WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->data_len, WAH_ERROR_TRAP, cleanup); // Ensure source data is within segment bounds
                 WAH_ENSURE_GOTO(size <= segment->data_len, WAH_ERROR_TRAP, cleanup); // Cannot initialize more than available data
 
-                memcpy(ctx->memory_base + offset, segment->data, size);
+                memcpy(ctx->memory_base + dest_offset, segment->data + src_offset, size);
                 break;
             }
             case WAH_OP_MEMORY_COPY: {

@@ -113,18 +113,20 @@ static const uint8_t wasm_binary_data_and_bulk_memory_test[] = {
     0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // Magic + Version
 
     // Type Section (1)
-    0x01, 0x11, // Section ID (1), Size (17)
-        0x03, // Num Types (3)
-        0x60, 0x02, 0x7F, 0x7F, 0x00,       // Type 0: (i32, i32) -> () for init_mem
-        0x60, 0x03, 0x7F, 0x7F, 0x7F, 0x00, // Type 1: (i32, i32, i32) -> () for copy_mem
-        0x60, 0x01, 0x7F, 0x01, 0x7F,       // Type 2: (i32) -> (i32) for get_byte
+    0x01, 0x0C, // Section ID (1), Size (12)
+        0x02, // Num Types (2)
+        // Type 0: (i32, i32, i32) -> () for copy_mem, init_mem_data0, init_mem_data1
+        0x60, 0x03, 0x7F, 0x7F, 0x7F, 0x00,
+        // Type 1: (i32) -> (i32) for get_byte
+        0x60, 0x01, 0x7F, 0x01, 0x7F,
 
     // Function Section (3)
-    0x03, 0x04, // Section ID (3), Size (4)
-        0x03, // Num Functions (3)
-        0x00, // Function 0 (init_mem) uses Type 0
-        0x01, // Function 1 (copy_mem) uses Type 1
-        0x02, // Function 2 (get_byte) uses Type 2
+    0x03, 0x05, // Section ID (3), Size (5)
+        0x04, // Num Functions (4) - Changed from 0x03 to 0x04
+        0x00, // Function 0 (init_mem_data0) uses Type 0
+        0x00, // Function 1 (init_mem_data1) uses Type 0
+        0x00, // Function 2 (copy_mem) uses Type 0
+        0x01, // Function 3 (get_byte) uses Type 1
 
     // Memory Section (5)
     0x05, 0x03, // Section ID (5), Size (3)
@@ -133,9 +135,9 @@ static const uint8_t wasm_binary_data_and_bulk_memory_test[] = {
         0x01, // Initial pages (1 page)
 
     // Export Section (7)
-    0x07, 0x22, // Section ID (7), Size (34)
-        0x03, // Num Exports (3)
-        0x08, 'i', 'n', 'i', 't', '_', 'm', 'e', 'm', // "init_mem"
+    0x07, 0x39, // Section ID (7), Size (57)
+        0x04, // Num Exports (4)
+        0x0E, 'i', 'n', 'i', 't', '_', 'm', 'e', 'm', '_', 'd', 'a', 't', 'a', '0', // "init_mem_data0"
         0x00, // Export Kind: Function
         0x00, // Function Index 0
         0x08, 'c', 'o', 'p', 'y', '_', 'm', 'e', 'm', // "copy_mem"
@@ -144,24 +146,37 @@ static const uint8_t wasm_binary_data_and_bulk_memory_test[] = {
         0x08, 'g', 'e', 't', '_', 'b', 'y', 't', 'e', // "get_byte"
         0x00, // Export Kind: Function
         0x02, // Function Index 2
+        0x0E, 'i', 'n', 'i', 't', '_', 'm', 'e', 'm', '_', 'd', 'a', 't', 'a', '1', // "init_mem_data1"
+        0x00, // Export Kind: Function
+        0x03, // Function Index 3
 
     // Data Count Section (12)
     0x0C, 0x01, // Section ID (12), Size (1)
         0x02, // Data Count (2)
 
     // Code Section (10)
-    0x0A, 0x21, // Section ID (10), Size (33)
-        0x03, // Num Code Bodies (3)
+    0x0A, 0x30, // Section ID (10), Size (48)
+        0x04, // Num Code Bodies (4)
 
-        // Code Body 0: init_mem (offset, size)
-        0x0A, // Body Size (10)
+        // Code Body 0: init_mem_data0 (dest_offset, src_offset, size)
+        0x0C, // Body Size (12)
         0x00, // No Local Variables
-            0x20, 0x00, // local.get 0 (offset)
-            0x20, 0x01, // local.get 1 (size)
+            0x20, 0x00, // local.get 0 (dest_offset)
+            0x20, 0x01, // local.get 1 (src_offset)
+            0x20, 0x02, // local.get 2 (size)
             0xFC, 0x08, 0x00, 0x00, // memory.init data_idx 0, mem_idx 0
             0x0B, // end
 
-        // Code Body 1: copy_mem (dest, src, size)
+        // Code Body 1: init_mem_data1 (dest_offset, src_offset, size)
+        0x0C, // Body Size (12)
+        0x00, // No Local Variables
+            0x20, 0x00, // local.get 0 (dest_offset)
+            0x20, 0x01, // local.get 1 (src_offset)
+            0x20, 0x02, // local.get 2 (size)
+            0xFC, 0x08, 0x01, 0x00, // memory.init data_idx 1, mem_idx 0
+            0x0B, // end
+
+        // Code Body 2: copy_mem (dest, src, size)
         0x0C, // Body Size (12)
         0x00, // No Local Variables
             0x20, 0x00, // local.get 0 (dest)
@@ -170,7 +185,7 @@ static const uint8_t wasm_binary_data_and_bulk_memory_test[] = {
             0xFC, 0x0A, 0x00, 0x00, // memory.copy dest_mem_idx 0, src_mem_idx 0
             0x0B, // end
 
-        // Code Body 2: get_byte (addr)
+        // Code Body 3: get_byte (addr)
         0x07, // Body Size (7)
         0x00, // No Local Variables
             0x20, 0x00, // local.get 0 (addr)
@@ -198,7 +213,7 @@ void wah_test_data_and_bulk_memory_ops() {
     wah_module_t module;
     wah_exec_context_t ctx;
     wah_error_t err;
-    wah_value_t params[3];
+    wah_value_t params[3]; // params array size is 3, as max args for any function is 3
     wah_value_t result;
 
     printf("\nRunning data segments and bulk memory operations tests...\n");
@@ -226,63 +241,95 @@ void wah_test_data_and_bulk_memory_ops() {
     assert(ctx.memory_base[4] == 0x00 && "Memory byte 4 should be 0x00 (not initialized by active segment)");
     printf("Initial memory state (active data segment 0) verified.\n");
 
-    // Test 3: memory.init - initialize data segment 0 at offset 100
-    uint32_t init_offset = 100;
-    uint32_t init_size = 4;
-    params[0].i32 = init_offset; // offset
-    params[1].i32 = init_size; // size
-    err = wah_call(&ctx, &module, 0, params, 2, NULL); // Call init_mem (func 0)
-    assert(err == WAH_OK && "Failed to call init_mem");
-    printf("memory.init successful. Initialized data segment 0 at offset %u.\n", init_offset);
+    // Test 3: memory.init - initialize data segment 0 at memory offset 100, data segment offset 0
+    uint32_t dest_offset_1 = 100;
+    uint32_t src_offset_1 = 0;
+    uint32_t size_1 = 4;
+    params[0].i32 = dest_offset_1; // dest_offset
+    params[1].i32 = src_offset_1;  // src_offset
+    params[2].i32 = size_1;        // size
+    err = wah_call(&ctx, &module, 0, params, 3, NULL); // Call init_mem_data0 (func 0)
+    assert(err == WAH_OK && "Failed to call init_mem_data0 with src_offset 0");
+    printf("memory.init successful. Initialized data segment 0 at memory offset %u from data segment offset %u.\n", dest_offset_1, src_offset_1);
 
     // Verify memory contents after memory.init
-    params[0].i32 = init_offset;
-    err = wah_call(&ctx, &module, 2, params, 1, &result); // Call get_byte (func 2)
+    params[0].i32 = dest_offset_1;
+    err = wah_call(&ctx, &module, 3, params, 1, &result); // Call get_byte (func 3)
     assert(err == WAH_OK && result.i32 == 0x01 && "Memory byte at offset 100 should be 0x01");
-    params[0].i32 = init_offset + 1;
-    err = wah_call(&ctx, &module, 2, params, 1, &result);
+    params[0].i32 = dest_offset_1 + 1;
+    err = wah_call(&ctx, &module, 3, params, 1, &result);
     assert(err == WAH_OK && result.i32 == 0x02 && "Memory byte at offset 101 should be 0x02");
+    printf("memory.init with src_offset 0 verification successful.\n");
 
-    // Test 4: memory.copy - copy 4 bytes from offset 100 to offset 200
+    // Test 4: memory.init - initialize data segment 1 at memory offset 110, data segment offset 1
+    uint32_t dest_offset_2 = 110;
+    uint32_t src_offset_2 = 1; // Start from the second byte of data segment 1 (value 0x06)
+    uint32_t size_2 = 2; // Copy 2 bytes (0x06, 0x07)
+    params[0].i32 = dest_offset_2; // dest_offset
+    params[1].i32 = src_offset_2;  // src_offset
+    params[2].i32 = size_2;        // size
+    err = wah_call(&ctx, &module, 1, params, 3, NULL); // Call init_mem_data1 (func 1)
+    assert(err == WAH_OK && "Failed to call init_mem_data1 with non-zero src_offset");
+    printf("memory.init successful. Initialized data segment 1 at memory offset %u from data segment offset %u.\n", dest_offset_2, src_offset_2);
+
+    // Verify memory contents after memory.init with non-zero src_offset
+    params[0].i32 = dest_offset_2;
+    err = wah_call(&ctx, &module, 3, params, 1, &result); // Call get_byte (func 3)
+    assert(err == WAH_OK && result.i32 == 0x06 && "Memory byte at offset 110 should be 0x06");
+    params[0].i32 = dest_offset_2 + 1;
+    err = wah_call(&ctx, &module, 3, params, 1, &result);
+    assert(err == WAH_OK && result.i32 == 0x07 && "Memory byte at offset 111 should be 0x07");
+    printf("memory.init with non-zero src_offset verification successful.\n");
+
+    // Test 5: memory.copy - copy 4 bytes from offset 100 to offset 200
     uint32_t copy_dest = 200;
     uint32_t copy_src = 100;
     uint32_t copy_size = 4;
     params[0].i32 = copy_dest; // dest
     params[1].i32 = copy_src; // src
     params[2].i32 = copy_size; // size
-    err = wah_call(&ctx, &module, 1, params, 3, NULL); // Call copy_mem (func 1)
+    err = wah_call(&ctx, &module, 2, params, 3, NULL); // Call copy_mem (func 2)
     assert(err == WAH_OK && "Failed to call copy_mem");
     printf("memory.copy successful. Copied %u bytes from %u to %u.\n", copy_size, copy_src, copy_dest);
 
     // Verify memory contents after memory.copy
     params[0].i32 = copy_dest;
-    err = wah_call(&ctx, &module, 2, params, 1, &result);
+    err = wah_call(&ctx, &module, 3, params, 1, &result); // Call get_byte (func 3)
     assert(err == WAH_OK && result.i32 == 0x01 && "Memory byte at offset 200 should be 0x01");
     params[0].i32 = copy_dest + 1;
-    err = wah_call(&ctx, &module, 2, params, 1, &result);
+    err = wah_call(&ctx, &module, 3, params, 1, &result);
     assert(err == WAH_OK && result.i32 == 0x02 && "Memory byte at offset 201 should be 0x02");
     printf("memory.copy verification successful.\n");
 
-    // Test 5: memory.init - out of bounds (offset + size > memory_size)
-    params[0].i32 = WAH_WASM_PAGE_SIZE - 2; // offset (2 bytes before end)
-    params[1].i32 = 4; // size (will go out of bounds)
-    err = wah_call(&ctx, &module, 0, params, 2, NULL);
-    assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for memory.init");
-    printf("memory.init out-of-bounds test successful.\n");
+    // Test 6: memory.init - out of bounds (dest_offset + size > memory_size)
+    params[0].i32 = WAH_WASM_PAGE_SIZE - 2; // dest_offset (2 bytes before end)
+    params[1].i32 = 0; // src_offset
+    params[2].i32 = 4; // size (will go out of bounds)
+    err = wah_call(&ctx, &module, 0, params, 3, NULL); // Call init_mem_data0 (func 0)
+    assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for memory.init (dest)");
+    printf("memory.init out-of-bounds (dest) test successful.\n");
 
-    // Test 6: memory.copy - out of bounds (dest)
+    // Test 7: memory.init - out of bounds (src_offset + size > segment->data_len)
+    params[0].i32 = 0; // dest_offset
+    params[1].i32 = 3; // src_offset (data segment 0 has 4 bytes, 3 + 2 = 5 > 4)
+    params[2].i32 = 2; // size
+    err = wah_call(&ctx, &module, 0, params, 3, NULL); // Call init_mem_data0 (func 0)
+    assert(err == WAH_ERROR_TRAP && "Expected trap for memory.init (src_offset out of bounds)");
+    printf("memory.init out-of-bounds (src) test successful.\n");
+
+    // Test 8: memory.copy - out of bounds (dest)
     params[0].i32 = WAH_WASM_PAGE_SIZE - 2; // dest
     params[1].i32 = 0; // src
     params[2].i32 = 4; // size
-    err = wah_call(&ctx, &module, 1, params, 3, NULL);
+    err = wah_call(&ctx, &module, 2, params, 3, NULL); // Call copy_mem (func 2)
     assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for memory.copy (dest)");
     printf("memory.copy out-of-bounds (dest) test successful.\n");
 
-    // Test 7: memory.copy - out of bounds (src)
+    // Test 9: memory.copy - out of bounds (src)
     params[0].i32 = 0; // dest
     params[1].i32 = WAH_WASM_PAGE_SIZE - 2; // src
     params[2].i32 = 4; // size
-    err = wah_call(&ctx, &module, 1, params, 3, NULL);
+    err = wah_call(&ctx, &module, 2, params, 3, NULL); // Call copy_mem (func 2)
     assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for memory.copy (src)");
     printf("memory.copy out-of-bounds (src) test successful.\n");
 
