@@ -340,6 +340,13 @@ typedef struct {
     if (!(cond)) { err = (error); WAH_LOG("WAH_ENSURE_GOTO(%s, %s, %s) failed", #cond, #error, #label); goto label; } \
 } while(0)
 
+// Helper macro to check for __builtin_xxx functions with __has_builtin
+#if defined(__has_builtin)
+#define WAH_HAS_BUILTIN(x) __has_builtin(x)
+#else
+#define WAH_HAS_BUILTIN(x) 0
+#endif
+
 // --- Safe Memory Allocation ---
 static inline wah_error_t wah_malloc(size_t count, size_t elemsize, void** out_ptr) {
     *out_ptr = NULL;
@@ -652,7 +659,7 @@ static inline double wah_canonicalize_f64(double val) {
 
 // popcnt
 static inline uint32_t wah_popcount_u32(uint32_t n) {
-#ifdef __GNUC__
+#if WAH_HAS_BUILTIN(__builtin_popcount) || defined(__GNUC__)
     return __builtin_popcount(n);
 #elif defined(_MSC_VER)
     return __popcnt(n);
@@ -668,7 +675,7 @@ static inline uint32_t wah_popcount_u32(uint32_t n) {
 }
 
 static inline uint64_t wah_popcount_u64(uint64_t n) {
-#ifdef __GNUC__
+#if WAH_HAS_BUILTIN(__builtin_popcountll) || defined(__GNUC__)
     return __builtin_popcountll(n);
 #elif defined(_MSC_VER)
     return __popcnt64(n);
@@ -685,7 +692,7 @@ static inline uint64_t wah_popcount_u64(uint64_t n) {
 
 // clz (count leading zeros)
 static inline uint32_t wah_clz_u32(uint32_t n) {
-#ifdef __GNUC__
+#if WAH_HAS_BUILTIN(__builtin_clz) || defined(__GNUC__)
     return n == 0 ? 32 : __builtin_clz(n);
 #elif defined(_MSC_VER)
     unsigned long index;
@@ -708,7 +715,7 @@ static inline uint32_t wah_clz_u32(uint32_t n) {
 }
 
 static inline uint64_t wah_clz_u64(uint64_t n) {
-#ifdef __GNUC__
+#if WAH_HAS_BUILTIN(__builtin_clzll) || defined(__GNUC__)
     return n == 0 ? 64 : __builtin_clzll(n);
 #elif defined(_MSC_VER)
     unsigned long index;
@@ -733,7 +740,7 @@ static inline uint64_t wah_clz_u64(uint64_t n) {
 
 // ctz (count trailing zeros)
 static inline uint32_t wah_ctz_u32(uint32_t n) {
-#ifdef __GNUC__
+#if WAH_HAS_BUILTIN(__builtin_ctz) || defined(__GNUC__)
     return n == 0 ? 32 : __builtin_ctz(n);
 #elif defined(_MSC_VER)
     unsigned long index;
@@ -755,7 +762,7 @@ static inline uint32_t wah_ctz_u32(uint32_t n) {
 }
 
 static inline uint64_t wah_ctz_u64(uint64_t n) {
-#ifdef __GNUC__
+#if WAH_HAS_BUILTIN(__builtin_ctzll) || defined(__GNUC__)
     return n == 0 ? 64 : __builtin_ctzll(n);
 #elif defined(_MSC_VER)
     unsigned long index;
@@ -778,7 +785,7 @@ static inline uint64_t wah_ctz_u64(uint64_t n) {
 
 // rotl (rotate left)
 static inline uint32_t wah_rotl_u32(uint32_t n, uint32_t shift) {
-#ifdef __clang__
+#if WAH_HAS_BUILTIN(__builtin_rotateleft32)
     return __builtin_rotateleft32(n, shift);
 #elif defined(_MSC_VER)
     return _rotl(n, shift);
@@ -789,7 +796,7 @@ static inline uint32_t wah_rotl_u32(uint32_t n, uint32_t shift) {
 }
 
 static inline uint64_t wah_rotl_u64(uint64_t n, uint64_t shift) {
-#ifdef __clang__
+#if WAH_HAS_BUILTIN(__builtin_rotateleft64)
     return __builtin_rotateleft64(n, shift);
 #elif defined(_MSC_VER)
     return _rotl64(n, shift);
@@ -801,7 +808,7 @@ static inline uint64_t wah_rotl_u64(uint64_t n, uint64_t shift) {
 
 // rotr (rotate right)
 static inline uint32_t wah_rotr_u32(uint32_t n, uint32_t shift) {
-#ifdef __clang__
+#if WAH_HAS_BUILTIN(__builtin_rotateright32)
     return __builtin_rotateright32(n, shift);
 #elif defined(_MSC_VER)
     return _rotr(n, shift);
@@ -812,7 +819,7 @@ static inline uint32_t wah_rotr_u32(uint32_t n, uint32_t shift) {
 }
 
 static inline uint64_t wah_rotr_u64(uint64_t n, uint64_t shift) {
-#ifdef __clang__
+#if WAH_HAS_BUILTIN(__builtin_rotateright64)
     return __builtin_rotateright64(n, shift);
 #elif defined(_MSC_VER)
     return _rotr64(n, shift);
@@ -824,7 +831,7 @@ static inline uint64_t wah_rotr_u64(uint64_t n, uint64_t shift) {
 
 // nearest (round to nearest, ties to even)
 static inline float wah_nearest_f32(float f) {
-#ifdef __clang__
+#if WAH_HAS_BUILTIN(__builtin_roundevenf) && defined(__clang__)
     return __builtin_roundevenf(f);
 #else
     if (isnan(f) || isinf(f) || f == 0.0f) return f;
@@ -835,7 +842,7 @@ static inline float wah_nearest_f32(float f) {
 }
 
 static inline double wah_nearest_f64(double d) {
-#ifdef __clang__
+#if WAH_HAS_BUILTIN(__builtin_roundeven) && defined(__clang__)
     return __builtin_roundeven(d);
 #else
     if (isnan(d) || isinf(d) || d == 0.0) return d;
@@ -1500,7 +1507,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_BR_TABLE: {
             wah_error_t err = WAH_OK; // Declare err here for goto cleanup
             uint32_t num_targets;
-            WAH_CHECK_GOTO(wah_decode_uleb128(code_ptr, code_end, &num_targets), cleanup_br_table);
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &num_targets));
 
             // Store all label_idx values to process them after decoding all
             uint32_t* label_indices = NULL;
