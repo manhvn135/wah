@@ -731,7 +731,397 @@ void test_i32x4_mul() {
     wah_v128_t operand1 = {{0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2, 3
     wah_v128_t operand2 = {{0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 3, 4
     wah_v128_t expected = {{0x06, 0x00, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 6, 12
-    if (run_simd_binary_op_test("i32x4.mul", i32x4_mul_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+    if (run_simd_binary_op_test("i8x16.ge_u", i32x4_mul_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i16x8.eq
+const uint8_t i16x8_eq_wasm[] = SIMD_BINARY_OP_WASM(0x2D);
+void test_i16x8_eq() {
+    wah_v128_t operand1 = {{0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00, 0x08, 0x00}};
+    wah_v128_t operand2 = {{0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00}};
+    wah_v128_t expected = {{0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00}};
+    if (run_simd_binary_op_test("i16x8.eq", i16x8_eq_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i16x8.ne
+const uint8_t i16x8_ne_wasm[] = SIMD_BINARY_OP_WASM(0x2E);
+void test_i16x8_ne() {
+    wah_v128_t operand1 = {{0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00, 0x08, 0x00}};
+    wah_v128_t operand2 = {{0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00}};
+    wah_v128_t expected = {{0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF}};
+    if (run_simd_binary_op_test("i16x8.ne", i16x8_ne_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i16x8.lt_s
+const uint8_t i16x8_lt_s_wasm[] = SIMD_BINARY_OP_WASM(0x2F);
+void test_i16x8_lt_s() {
+    wah_v128_t operand1 = {{0x01, 0x00, 0x02, 0x00, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, -32768, 32767
+    wah_v128_t operand2 = {{0x02, 0x00, 0x01, 0x00, 0xFF, 0x7F, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2, 1, 32767, -32768
+    wah_v128_t expected = {{0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1<2, 2<1(F), -32768<32767, 32767<-32768(F)
+    if (run_simd_binary_op_test("i16x8.lt_s", i16x8_lt_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i16x8.lt_u
+const uint8_t i16x8_lt_u_wasm[] = SIMD_BINARY_OP_WASM(0x30);
+void test_i16x8_lt_u() {
+    wah_v128_t operand1 = {{0x01, 0x00, 0x02, 0x00, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, 32768, 32767
+    wah_v128_t operand2 = {{0x02, 0x00, 0x01, 0x00, 0xFF, 0x7F, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2, 1, 32767, 32768
+    wah_v128_t expected = {{0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1<2, 2<1(F), 32768<32767(F), 32767<32768
+    if (run_simd_binary_op_test("i16x8.lt_u", i16x8_lt_u_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i16x8.gt_s
+const uint8_t i16x8_gt_s_wasm[] = SIMD_BINARY_OP_WASM(0x31);
+void test_i16x8_gt_s() {
+    wah_v128_t operand1 = {{0x02, 0x00, 0x01, 0x00, 0xFF, 0x7F, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2, 1, 32767, -32768
+    wah_v128_t operand2 = {{0x01, 0x00, 0x02, 0x00, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, -32768, 32767
+    wah_v128_t expected = {{0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2>1, 1>2(F), 32767>-32768, -32768>32767(F)
+    if (run_simd_binary_op_test("i16x8.gt_s", i16x8_gt_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i16x8.gt_u
+const uint8_t i16x8_gt_u_wasm[] = SIMD_BINARY_OP_WASM(0x32);
+void test_i16x8_gt_u() {
+    wah_v128_t operand1 = {{0x02, 0x00, 0x01, 0x00, 0xFF, 0x7F, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2, 1, 32767, 32768
+    wah_v128_t operand2 = {{0x01, 0x00, 0x02, 0x00, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, 32768, 32767
+    wah_v128_t expected = {{0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2>1, 1>2(F), 32767>32768(F), 32768>32767
+    if (run_simd_binary_op_test("i16x8.gt_u", i16x8_gt_u_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i16x8.le_s
+const uint8_t i16x8_le_s_wasm[] = SIMD_BINARY_OP_WASM(0x33);
+void test_i16x8_le_s() {
+    wah_v128_t operand1 = {{0x01, 0x00, 0x02, 0x00, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, -32768, 32767
+    wah_v128_t operand2 = {{0x01, 0x00, 0x01, 0x00, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 1, -32768, 32767
+    wah_v128_t expected = {{0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}; // 1<=1, 2<=1(F), -32768<=-32768, 32767<=32767, 0<=0 (remaining 4 lanes)
+    if (run_simd_binary_op_test("i16x8.le_s", i16x8_le_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i16x8.le_u
+const uint8_t i16x8_le_u_wasm[] = SIMD_BINARY_OP_WASM(0x34);
+void test_i16x8_le_u() {
+    wah_v128_t operand1 = {{0x01, 0x00, 0x02, 0x00, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, 32768, 32767
+    wah_v128_t operand2 = {{0x01, 0x00, 0x01, 0x00, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 1, 32768, 32767
+    wah_v128_t expected = {{0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}; // 1<=1, 2<=1(F), 32768<=32768, 32767<=32767, 0<=0 (remaining 4 lanes)
+    if (run_simd_binary_op_test("i16x8.le_u", i16x8_le_u_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i16x8.ge_s
+const uint8_t i16x8_ge_s_wasm[] = SIMD_BINARY_OP_WASM(0x35);
+void test_i16x8_ge_s() {
+    wah_v128_t operand1 = {{0x01, 0x00, 0x02, 0x00, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, -32768, 32767
+    wah_v128_t operand2 = {{0x01, 0x00, 0x01, 0x00, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 1, -32768, 32767
+    wah_v128_t expected = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}; // 1>=1, 2>=1, -32768>=-32768, 32767>=32767, 0>=0 (remaining 4 lanes)
+    if (run_simd_binary_op_test("i16x8.ge_s", i16x8_ge_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i16x8.ge_u
+const uint8_t i16x8_ge_u_wasm[] = SIMD_BINARY_OP_WASM(0x36);
+void test_i16x8_ge_u() {
+    wah_v128_t operand1 = {{0x01, 0x00, 0x02, 0x00, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, 32768, 32767
+    wah_v128_t operand2 = {{0x01, 0x00, 0x01, 0x00, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 1, 32768, 32767
+    wah_v128_t expected = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}; // 1>=1, 2>=1, 32768>=32768, 32767>=32767, 0>=0 (remaining 4 lanes)
+    if (run_simd_binary_op_test("i16x8.ge_u", i16x8_ge_u_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i8x16.eq
+const uint8_t i8x16_eq_wasm[] = SIMD_BINARY_OP_WASM(0x23);
+void test_i8x16_eq() {
+    wah_v128_t operand1 = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}};
+    wah_v128_t operand2 = {{0x01, 0x00, 0x03, 0x00, 0x05, 0x00, 0x07, 0x00, 0x09, 0x00, 0x0B, 0x00, 0x0D, 0x00, 0x0F, 0x00}};
+    wah_v128_t expected = {{0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00}};
+    if (run_simd_binary_op_test("i8x16.eq", i8x16_eq_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i8x16.ne
+const uint8_t i8x16_ne_wasm[] = SIMD_BINARY_OP_WASM(0x24);
+void test_i8x16_ne() {
+    wah_v128_t operand1 = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}};
+    wah_v128_t operand2 = {{0x01, 0x00, 0x03, 0x00, 0x05, 0x00, 0x07, 0x00, 0x09, 0x00, 0x0B, 0x00, 0x0D, 0x00, 0x0F, 0x00}};
+    wah_v128_t expected = {{0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF}};
+    if (run_simd_binary_op_test("i8x16.ne", i8x16_ne_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i8x16.lt_s
+const uint8_t i8x16_lt_s_wasm[] = SIMD_BINARY_OP_WASM(0x25);
+void test_i8x16_lt_s() {
+    wah_v128_t operand1 = {{0x01, 0x02, 0x80, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, -128, 127
+    wah_v128_t operand2 = {{0x02, 0x01, 0x7F, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2, 1, 127, -128
+    wah_v128_t expected = {{0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1<2, 2<1(F), -128<127, 127<-128(F)
+    if (run_simd_binary_op_test("i8x16.lt_s", i8x16_lt_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i8x16.lt_u
+const uint8_t i8x16_lt_u_wasm[] = SIMD_BINARY_OP_WASM(0x26);
+void test_i8x16_lt_u() {
+    wah_v128_t operand1 = {{0x01, 0x02, 0x80, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, 128, 127
+    wah_v128_t operand2 = {{0x02, 0x01, 0x7F, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2, 1, 127, 128
+    wah_v128_t expected = {{0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1<2, 2<1(F), 128<127(F), 127<128
+    if (run_simd_binary_op_test("i8x16.lt_u", i8x16_lt_u_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i8x16.gt_s
+const uint8_t i8x16_gt_s_wasm[] = SIMD_BINARY_OP_WASM(0x27);
+void test_i8x16_gt_s() {
+    wah_v128_t operand1 = {{0x02, 0x01, 0x7F, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2, 1, 127, -128
+    wah_v128_t operand2 = {{0x01, 0x02, 0x80, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, -128, 127
+    wah_v128_t expected = {{0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2>1, 1>2(F), 127>-128, -128>127(F)
+    if (run_simd_binary_op_test("i8x16.gt_s", i8x16_gt_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i8x16.gt_u
+const uint8_t i8x16_gt_u_wasm[] = SIMD_BINARY_OP_WASM(0x28);
+void test_i8x16_gt_u() {
+    wah_v128_t operand1 = {{0x02, 0x01, 0x7F, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2, 1, 127, 128
+    wah_v128_t operand2 = {{0x01, 0x02, 0x80, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, 128, 127
+    wah_v128_t expected = {{0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 2>1, 1>2(F), 127>128(F), 128>127
+    if (run_simd_binary_op_test("i8x16.gt_u", i8x16_gt_u_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i8x16.le_s
+const uint8_t i8x16_le_s_wasm[] = SIMD_BINARY_OP_WASM(0x29);
+void test_i8x16_le_s() {
+    wah_v128_t operand1 = {{0x01, 0x02, 0x80, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, -128, 127
+    wah_v128_t operand2 = {{0x01, 0x01, 0x80, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 1, -128, 127
+    wah_v128_t expected = {{0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}; // 1<=1, 2<=1(F), -128<=-128, 127<=127, 0<=0 (remaining 12 bytes)
+    if (run_simd_binary_op_test("i8x16.le_s", i8x16_le_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i8x16.le_u
+const uint8_t i8x16_le_u_wasm[] = SIMD_BINARY_OP_WASM(0x2A);
+void test_i8x16_le_u() {
+    wah_v128_t operand1 = {{0x01, 0x02, 0x80, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, 128, 127
+    wah_v128_t operand2 = {{0x01, 0x01, 0x80, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 1, 128, 127
+    wah_v128_t expected = {{0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}; // 1<=1, 2<=1(F), 128<=128, 127<=127, 0<=0 (remaining 12 bytes)
+    if (run_simd_binary_op_test("i8x16.le_u", i8x16_le_u_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i8x16.ge_s
+const uint8_t i8x16_ge_s_wasm[] = SIMD_BINARY_OP_WASM(0x2B);
+void test_i8x16_ge_s() {
+    wah_v128_t operand1 = {{0x01, 0x02, 0x80, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, -128, 127
+    wah_v128_t operand2 = {{0x01, 0x01, 0x80, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 1, -128, 127
+    wah_v128_t expected = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}; // 1>=1, 2>=1, -128>=-128, 127>=127, 0>=0 (remaining 12 bytes)
+    if (run_simd_binary_op_test("i8x16.ge_s", i8x16_ge_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i8x16.ge_u
+const uint8_t i8x16_ge_u_wasm[] = SIMD_BINARY_OP_WASM(0x2C);
+void test_i8x16_ge_u() {
+    wah_v128_t operand1 = {{0x01, 0x02, 0x80, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 2, 128, 127
+    wah_v128_t operand2 = {{0x01, 0x01, 0x80, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // 1, 1, 128, 127
+    wah_v128_t expected = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}; // 1>=1, 2>=1, 128>=128, 127>=127, 0>=0 (remaining 12 bytes)
+    if (run_simd_binary_op_test("i8x16.ge_u", i8x16_ge_u_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.eq
+const uint8_t i32x4_eq_wasm[] = SIMD_BINARY_OP_WASM(0x37);
+void test_i32x4_eq() {
+    wah_v128_t operand1 = { .i32 = {1, 2, 3, 4} }, operand2 = { .i32 = {1, 0, 3, 0} }, expected = { .u32 = {~0U, 0, ~0U, 0} };
+    if (run_simd_binary_op_test("i32x4.eq", i32x4_eq_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.ne
+const uint8_t i32x4_ne_wasm[] = SIMD_BINARY_OP_WASM(0x38);
+void test_i32x4_ne() {
+    wah_v128_t operand1 = { .i32 = {1, 2, 3, 4} }, operand2 = { .i32 = {1, 0, 3, 0} }, expected = { .u32 = {0, ~0U, 0, ~0U} };
+    if (run_simd_binary_op_test("i32x4.ne", i32x4_ne_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.lt_s
+const uint8_t i32x4_lt_s_wasm[] = SIMD_BINARY_OP_WASM(0x39);
+void test_i32x4_lt_s() {
+    wah_v128_t operand1 = { .i32 = {1, 2, -2147483648, 2147483647} }, operand2 = { .i32 = {2, 1, 2147483647, -2147483648} };
+    wah_v128_t expected = { .u32 = {~0U, 0, ~0U, 0} }; // 1<2, 2<1(F), -2147483648<2147483647, 2147483647<-2147483648(F)
+    if (run_simd_binary_op_test("i32x4.lt_s", i32x4_lt_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.lt_u
+const uint8_t i32x4_lt_u_wasm[] = SIMD_BINARY_OP_WASM(0x3A);
+void test_i32x4_lt_u() {
+    wah_v128_t operand1 = { .u32 = {1, 2, 2147483648U, 2147483647U} }, operand2 = { .u32 = {2, 1, 2147483647U, 2147483648U} };
+    wah_v128_t expected = { .u32 = {~0U, 0, 0, ~0U} }; // 1<2, 2<1(F), 2147483648<2147483647(F), 2147483647<2147483648
+    if (run_simd_binary_op_test("i32x4.lt_u", i32x4_lt_u_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.gt_s
+const uint8_t i32x4_gt_s_wasm[] = SIMD_BINARY_OP_WASM(0x3B);
+void test_i32x4_gt_s() {
+    wah_v128_t operand1 = { .i32 = {2, 1, 2147483647, -2147483648} }, operand2 = { .i32 = {1, 2, -2147483648, 2147483647} };
+    wah_v128_t expected = { .u32 = {~0U, 0, ~0U, 0} }; // 2>1, 1>2(F), 2147483647>-2147483648, -2147483648>2147483647(F)
+    if (run_simd_binary_op_test("i32x4.gt_s", i32x4_gt_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.gt_u
+const uint8_t i32x4_gt_u_wasm[] = SIMD_BINARY_OP_WASM(0x3C);
+void test_i32x4_gt_u() {
+    wah_v128_t operand1 = { .u32 = {2, 1, 2147483647U, 2147483648U} }, operand2 = { .u32 = {1, 2, 2147483648U, 2147483647U} };
+    wah_v128_t expected = { .u32 = {~0U, 0, 0, ~0U} }; // 2>1, 1>2(F), 2147483647>2147483648(F), 2147483648>2147483647
+    if (run_simd_binary_op_test("i32x4.gt_u", i32x4_gt_u_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.le_s
+const uint8_t i32x4_le_s_wasm[] = SIMD_BINARY_OP_WASM(0x3D);
+void test_i32x4_le_s() {
+    wah_v128_t operand1 = { .i32 = {1, 2, -2147483648, 2147483647} }, operand2 = { .i32 = {1, 1, -2147483648, 2147483647} };
+    wah_v128_t expected = { .u32 = {~0U, 0, ~0U, ~0U} }; // 1<=1, 2<=1(F), -2147483648<=-2147483648, 2147483647<=2147483647
+    if (run_simd_binary_op_test("i32x4.le_s", i32x4_le_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.le_u
+const uint8_t i32x4_le_u_wasm[] = SIMD_BINARY_OP_WASM(0x3E);
+void test_i32x4_le_u() {
+    wah_v128_t operand1 = { .u32 = {1, 2, 2147483648U, 2147483647U} }, operand2 = { .u32 = {1, 1, 2147483648U, 2147483647U} };
+    wah_v128_t expected = { .u32 = {~0U, 0, ~0U, ~0U} }; // 1<=1, 2<=1(F), 2147483648<=2147483648, 2147483647<=2147483647
+    if (run_simd_binary_op_test("i32x4.le_u", i32x4_le_u_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.ge_s
+const uint8_t i32x4_ge_s_wasm[] = SIMD_BINARY_OP_WASM(0x3F);
+void test_i32x4_ge_s() {
+    wah_v128_t operand1 = { .i32 = {1, 2, -2147483648, 2147483647} }, operand2 = { .i32 = {1, 1, -2147483648, 2147483647} };
+    wah_v128_t expected = { .u32 = {~0U, ~0U, ~0U, ~0U} }; // 1>=1, 2>=1, -2147483648>=-2147483648, 2147483647>=2147483647
+    if (run_simd_binary_op_test("i32x4.ge_s", i32x4_ge_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.ge_u
+const uint8_t i32x4_ge_u_wasm[] = SIMD_BINARY_OP_WASM(0x40);
+void test_i32x4_ge_u() {
+    wah_v128_t operand1 = { .u32 = {1, 2, 2147483648U, 2147483647U} }, operand2 = { .u32 = {1, 1, 2147483648U, 2147483647U} };
+    wah_v128_t expected = { .u32 = {~0U, ~0U, ~0U, ~0U} }; // 1>=1, 2>=1, 2147483648>=2147483648, 2147483647>=2147483647
+    if (run_simd_binary_op_test("i32x4.ge_u", i32x4_ge_u_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i64x2.eq
+const uint8_t i64x2_eq_wasm[] = SIMD_BINARY_OP_WASM(0x41);
+void test_i64x2_eq() {
+    wah_v128_t operand1 = { .i64 = {1, 2} }, operand2 = { .i64 = {1, 0} }, expected = { .u64 = {~0ULL, 0} };
+    if (run_simd_binary_op_test("i64x2.eq", i64x2_eq_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i64x2.ne
+const uint8_t i64x2_ne_wasm[] = SIMD_BINARY_OP_WASM(0x42);
+void test_i64x2_ne() {
+    wah_v128_t operand1 = { .i64 = {1, 2} }, operand2 = { .i64 = {1, 0} }, expected = { .u64 = {0, ~0ULL} };
+    if (run_simd_binary_op_test("i64x2.ne", i64x2_ne_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i64x2.lt_s
+const uint8_t i64x2_lt_s_wasm[] = SIMD_BINARY_OP_WASM(0x43);
+void test_i64x2_lt_s() {
+    wah_v128_t operand1 = { .i64 = {1, 2} }, operand2 = { .i64 = {2, 1} }, expected = { .u64 = {~0ULL, 0} }; // 1<2, 2<1(F)
+    if (run_simd_binary_op_test("i64x2.lt_s", i64x2_lt_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i64x2.gt_s
+const uint8_t i64x2_gt_s_wasm[] = SIMD_BINARY_OP_WASM(0x44);
+void test_i64x2_gt_s() {
+    wah_v128_t operand1 = { .i64 = {2, 1} }, operand2 = { .i64 = {1, 2} }, expected = { .u64 = {~0ULL, 0} }; // 2>1, 1>2(F)
+    if (run_simd_binary_op_test("i64x2.gt_s", i64x2_gt_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i64x2.le_s
+const uint8_t i64x2_le_s_wasm[] = SIMD_BINARY_OP_WASM(0x45);
+void test_i64x2_le_s() {
+    wah_v128_t operand1 = { .i64 = {1, 2} }, operand2 = { .i64 = {1, 2} }, expected = { .u64 = {~0ULL, ~0ULL} }; // 1<=1, 2<=2
+    if (run_simd_binary_op_test("i64x2.le_s", i64x2_le_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i64x2.ge_s
+const uint8_t i64x2_ge_s_wasm[] = SIMD_BINARY_OP_WASM(0x46);
+void test_i64x2_ge_s() {
+    wah_v128_t operand1 = { .i64 = {1, 2} }, operand2 = { .i64 = {1, 2} }, expected = { .u64 = {~0ULL, ~0ULL} }; // 1>=1, 2>=2
+    if (run_simd_binary_op_test("i64x2.ge_s", i64x2_ge_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f32x4.eq
+const uint8_t f32x4_eq_wasm[] = SIMD_BINARY_OP_WASM(0x47);
+void test_f32x4_eq() {
+    wah_v128_t operand1 = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} }, operand2 = { .f32 = {1.0f, 0.0f, 3.0f, 0.0f} };
+    wah_v128_t expected = { .u32 = {~0U, 0, ~0U, 0} };
+    if (run_simd_binary_op_test("f32x4.eq", f32x4_eq_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f32x4.ne
+const uint8_t f32x4_ne_wasm[] = SIMD_BINARY_OP_WASM(0x48);
+void test_f32x4_ne() {
+    wah_v128_t operand1 = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} }, operand2 = { .f32 = {1.0f, 0.0f, 3.0f, 0.0f} };
+    wah_v128_t expected = { .u32 = {0, ~0U, 0, ~0U} };
+    if (run_simd_binary_op_test("f32x4.ne", f32x4_ne_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f32x4.lt
+const uint8_t f32x4_lt_wasm[] = SIMD_BINARY_OP_WASM(0x49);
+void test_f32x4_lt() {
+    wah_v128_t operand1 = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} }, operand2 = { .f32 = {2.0f, 1.0f, 3.0f, 5.0f} };
+    wah_v128_t expected = { .u32 = {~0U, 0, 0, ~0U} }; // 1<2, 2<1(F), 3<3(F), 4<5
+    if (run_simd_binary_op_test("f32x4.lt", f32x4_lt_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f32x4.gt
+const uint8_t f32x4_gt_wasm[] = SIMD_BINARY_OP_WASM(0x4A);
+void test_f32x4_gt() {
+    wah_v128_t operand1 = { .f32 = {2.0f, 1.0f, 3.0f, 5.0f} }, operand2 = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} };
+    wah_v128_t expected = { .u32 = {~0U, 0, 0, ~0U} }; // 2>1, 1>2(F), 3>3(F), 5>4
+    if (run_simd_binary_op_test("f32x4.gt", f32x4_gt_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f32x4.le
+const uint8_t f32x4_le_wasm[] = SIMD_BINARY_OP_WASM(0x4B);
+void test_f32x4_le() {
+    wah_v128_t operand1 = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} }, operand2 = { .f32 = {1.0f, 1.0f, 3.0f, 5.0f} };
+    wah_v128_t expected = { .u32 = {~0U, 0, ~0U, ~0U} }; // 1<=1, 2<=1(F), 3<=3, 4<=5
+    if (run_simd_binary_op_test("f32x4.le", f32x4_le_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f32x4.ge
+const uint8_t f32x4_ge_wasm[] = SIMD_BINARY_OP_WASM(0x4C);
+void test_f32x4_ge() {
+    wah_v128_t operand1 = { .f32 = {1.0f, 2.0f, 3.0f, 5.0f} }, operand2 = { .f32 = {1.0f, 1.0f, 3.0f, 4.0f} };
+    wah_v128_t expected = { .u32 = {~0U, ~0U, ~0U, ~0U} }; // 1>=1, 2>=1, 3>=3, 5>=4
+    if (run_simd_binary_op_test("f32x4.ge", f32x4_ge_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f64x2.eq
+const uint8_t f64x2_eq_wasm[] = SIMD_BINARY_OP_WASM(0x58);
+void test_f64x2_eq() {
+    wah_v128_t operand1 = { .f64 = {1.0, 2.0} }, operand2 = { .f64 = {1.0, 0.0} }, expected = { .u64 = {~0ULL, 0} };
+    if (run_simd_binary_op_test("f64x2.eq", f64x2_eq_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f64x2.ne
+const uint8_t f64x2_ne_wasm[] = SIMD_BINARY_OP_WASM(0x59);
+void test_f64x2_ne() {
+    wah_v128_t operand1 = { .f64 = {1.0, 2.0} }, operand2 = { .f64 = {1.0, 0.0} }, expected = { .u64 = {0, ~0ULL} };
+    if (run_simd_binary_op_test("f64x2.ne", f64x2_ne_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f64x2.lt
+const uint8_t f64x2_lt_wasm[] = SIMD_BINARY_OP_WASM(0x5A);
+void test_f64x2_lt() {
+    wah_v128_t operand1 = { .f64 = {1.0, 2.0} }, operand2 = { .f64 = {2.0, 1.0} }, expected = { .u64 = {~0ULL, 0} }; // 1<2, 2<1(F)
+    if (run_simd_binary_op_test("f64x2.lt", f64x2_lt_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f64x2.gt
+const uint8_t f64x2_gt_wasm[] = SIMD_BINARY_OP_WASM(0x5B);
+void test_f64x2_gt() {
+    wah_v128_t operand1 = { .f64 = {2.0, 1.0} }, operand2 = { .f64 = {1.0, 2.0} }, expected = { .u64 = {~0ULL, 0} }; // 2>1, 1>2(F)
+    if (run_simd_binary_op_test("f64x2.gt", f64x2_gt_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f64x2.le
+const uint8_t f64x2_le_wasm[] = SIMD_BINARY_OP_WASM(0x5E);
+void test_f64x2_le() {
+    wah_v128_t operand1 = { .f64 = {1.0, 2.0} }, operand2 = { .f64 = {1.0, 1.0} }, expected = { .u64 = {~0ULL, 0} }; // 1<=1, 2<=1(F)
+    if (run_simd_binary_op_test("f64x2.le", f64x2_le_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f64x2.ge
+const uint8_t f64x2_ge_wasm[] = SIMD_BINARY_OP_WASM(0x5F);
+void test_f64x2_ge() {
+    wah_v128_t operand1 = { .f64 = {1.0, 2.0} }, operand2 = { .f64 = {1.0, 1.0} }, expected = { .u64 = {~0ULL, ~0ULL} }; // 1>=1, 2>=1
+    if (run_simd_binary_op_test("f64x2.ge", f64x2_ge_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
 }
 
 int main() {
@@ -752,5 +1142,53 @@ int main() {
     test_i8x16_sub_sat_u();
     test_i16x8_sub();
     test_i32x4_mul();
+    test_i16x8_eq();
+    test_i16x8_ne();
+    test_i16x8_lt_s();
+    test_i16x8_lt_u();
+    test_i16x8_gt_s();
+    test_i16x8_gt_u();
+    test_i16x8_le_s();
+    test_i16x8_le_u();
+    test_i16x8_ge_s();
+    test_i16x8_ge_u();
+    test_i8x16_eq();
+    test_i8x16_ne();
+    test_i8x16_lt_s();
+    test_i8x16_lt_u();
+    test_i8x16_gt_s();
+    test_i8x16_gt_u();
+    test_i8x16_le_s();
+    test_i8x16_le_u();
+    test_i8x16_ge_s();
+    test_i8x16_ge_u();
+    test_i32x4_eq();
+    test_i32x4_ne();
+    test_i32x4_lt_s();
+    test_i32x4_lt_u();
+    test_i32x4_gt_s();
+    test_i32x4_gt_u();
+    test_i32x4_le_s();
+    test_i32x4_le_u();
+    test_i32x4_ge_s();
+    test_i32x4_ge_u();
+    test_i64x2_eq();
+    test_i64x2_ne();
+    test_i64x2_lt_s();
+    test_i64x2_gt_s();
+    test_i64x2_le_s();
+    test_i64x2_ge_s();
+    test_f32x4_eq();
+    test_f32x4_ne();
+    test_f32x4_lt();
+    test_f32x4_gt();
+    test_f32x4_le();
+    test_f32x4_ge();
+    test_f64x2_eq();
+    test_f64x2_ne();
+    test_f64x2_lt();
+    test_f64x2_gt();
+    test_f64x2_le();
+    test_f64x2_ge();
     return 0;
 }

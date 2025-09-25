@@ -328,6 +328,21 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
     X(F32X4_ADD, 0xD0E4) X(F32X4_SUB, 0xD0E5) X(F32X4_MUL, 0xD0E6) X(F32X4_DIV, 0xD0E7) \
     X(F64X2_ADD, 0xD0F0) X(F64X2_SUB, 0xD0F1) X(F64X2_MUL, 0xD0F2) X(F64X2_DIV, 0xD0F3) \
     \
+    /* Vector Comparison Operators */ \
+    X(I8X16_EQ, 0xD023) X(I8X16_NE, 0xD024) \
+    X(I8X16_LT_S, 0xD025) X(I8X16_LT_U, 0xD026) X(I8X16_GT_S, 0xD027) X(I8X16_GT_U, 0xD028) \
+    X(I8X16_LE_S, 0xD029) X(I8X16_LE_U, 0xD02A) X(I8X16_GE_S, 0xD02B) X(I8X16_GE_U, 0xD02C) \
+    X(I16X8_EQ, 0xD02D) X(I16X8_NE, 0xD02E) \
+    X(I16X8_LT_S, 0xD02F) X(I16X8_LT_U, 0xD030) X(I16X8_GT_S, 0xD031) X(I16X8_GT_U, 0xD032) \
+    X(I16X8_LE_S, 0xD033) X(I16X8_LE_U, 0xD034) X(I16X8_GE_S, 0xD035) X(I16X8_GE_U, 0xD036) \
+    X(I32X4_EQ, 0xD037) X(I32X4_NE, 0xD038) \
+    X(I32X4_LT_S, 0xD039) X(I32X4_LT_U, 0xD03A) X(I32X4_GT_S, 0xD03B) X(I32X4_GT_U, 0xD03C) \
+    X(I32X4_LE_S, 0xD03D) X(I32X4_LE_U, 0xD03E) X(I32X4_GE_S, 0xD03F) X(I32X4_GE_U, 0xD040) \
+    X(I64X2_EQ, 0xD041) X(I64X2_NE, 0xD042) \
+    X(I64X2_LT_S, 0xD043) X(I64X2_GT_S, 0xD044) X(I64X2_LE_S, 0xD045) X(I64X2_GE_S, 0xD046) \
+    X(F32X4_EQ, 0xD047) X(F32X4_NE, 0xD048) X(F32X4_LT, 0xD049) X(F32X4_GT, 0xD04A) X(F32X4_LE, 0xD04B) X(F32X4_GE, 0xD04C) \
+    X(F64X2_EQ, 0xD058) X(F64X2_NE, 0xD059) X(F64X2_LT, 0xD05A) X(F64X2_GT, 0xD05B) X(F64X2_LE, 0xD05E) X(F64X2_GE, 0xD05F) \
+    \
     /* Conversion Operators */ \
     X(I32_WRAP_I64, 0xA7) X(I32_TRUNC_F32_S, 0xA8) X(I32_TRUNC_F32_U, 0xA9) X(I32_TRUNC_F64_S, 0xAA) X(I32_TRUNC_F64_U, 0xAB) \
     X(I64_EXTEND_I32_S, 0xAC) X(I64_EXTEND_I32_U, 0xAD) \
@@ -1507,7 +1522,22 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_I32X4_ADD: case WAH_OP_I32X4_SUB: case WAH_OP_I32X4_MUL:
         case WAH_OP_I64X2_ADD: case WAH_OP_I64X2_SUB: case WAH_OP_I64X2_MUL:
         case WAH_OP_F32X4_ADD: case WAH_OP_F32X4_SUB: case WAH_OP_F32X4_MUL: case WAH_OP_F32X4_DIV:
-        case WAH_OP_F64X2_ADD: case WAH_OP_F64X2_SUB: case WAH_OP_F64X2_MUL: case WAH_OP_F64X2_DIV: {
+        case WAH_OP_F64X2_ADD: case WAH_OP_F64X2_SUB: case WAH_OP_F64X2_MUL: case WAH_OP_F64X2_DIV:
+        case WAH_OP_I8X16_EQ: case WAH_OP_I8X16_NE: case WAH_OP_I8X16_LT_S: case WAH_OP_I8X16_LT_U:
+        case WAH_OP_I8X16_GT_S: case WAH_OP_I8X16_GT_U: case WAH_OP_I8X16_LE_S: case WAH_OP_I8X16_LE_U:
+        case WAH_OP_I8X16_GE_S: case WAH_OP_I8X16_GE_U:
+        case WAH_OP_I16X8_EQ: case WAH_OP_I16X8_NE: case WAH_OP_I16X8_LT_S: case WAH_OP_I16X8_LT_U:
+        case WAH_OP_I16X8_GT_S: case WAH_OP_I16X8_GT_U: case WAH_OP_I16X8_LE_S: case WAH_OP_I16X8_LE_U:
+        case WAH_OP_I16X8_GE_S: case WAH_OP_I16X8_GE_U:
+        case WAH_OP_I32X4_EQ: case WAH_OP_I32X4_NE: case WAH_OP_I32X4_LT_S: case WAH_OP_I32X4_LT_U:
+        case WAH_OP_I32X4_GT_S: case WAH_OP_I32X4_GT_U: case WAH_OP_I32X4_LE_S: case WAH_OP_I32X4_LE_U:
+        case WAH_OP_I32X4_GE_S: case WAH_OP_I32X4_GE_U:
+        case WAH_OP_I64X2_EQ: case WAH_OP_I64X2_NE: case WAH_OP_I64X2_LT_S: case WAH_OP_I64X2_GT_S:
+        case WAH_OP_I64X2_LE_S: case WAH_OP_I64X2_GE_S:
+        case WAH_OP_F32X4_EQ: case WAH_OP_F32X4_NE: case WAH_OP_F32X4_LT: case WAH_OP_F32X4_GT:
+        case WAH_OP_F32X4_LE: case WAH_OP_F32X4_GE:
+        case WAH_OP_F64X2_EQ: case WAH_OP_F64X2_NE: case WAH_OP_F64X2_LT: case WAH_OP_F64X2_GT:
+        case WAH_OP_F64X2_LE: case WAH_OP_F64X2_GE: {
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128));
             return wah_validation_push_type(vctx, WAH_TYPE_V128);
@@ -1828,7 +1858,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             return WAH_OK;
 
         default:
-            break; // Assume other opcodes are valid for now
+            return WAH_ERROR_VALIDATION_FAILED;
     }
     return WAH_OK;
 }
@@ -3516,6 +3546,34 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 break; \
             }
 
+#define V128_CMP_I_LANE(N, op, field) { \
+                wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A; \
+                for (int i = 0; i < 128/N; ++i) { \
+                    a.field[i] = (a.field[i] op b.field[i]) ? (~0ULL >> (64 - N)) : 0; \
+                } \
+                VSTACK_V128_A = a; ctx->sp--; break; \
+            }
+#define V128_CMP_I_LANE_S(N, op, field) { \
+                wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A; \
+                for (int i = 0; i < 128/N; ++i) { \
+                    a.field[i] = (((int##N##_t)a.field[i]) op ((int##N##_t)b.field[i])) ? (~0ULL >> (64 - N)) : 0; \
+                } \
+                VSTACK_V128_A = a; ctx->sp--; break; \
+            }
+#define V128_CMP_I_LANE_U(N, op, field) { \
+                wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A; \
+                for (int i = 0; i < 128/N; ++i) { \
+                    a.field[i] = (((uint##N##_t)a.field[i]) op ((uint##N##_t)b.field[i])) ? (~0ULL >> (64 - N)) : 0; \
+                } \
+                VSTACK_V128_A = a; ctx->sp--; break; \
+            }
+#define V128_CMP_F_LANE(N, op, field) { \
+                wah_v128_t *a_ptr = &VSTACK_V128_A; \
+                wah_v128_t b = VSTACK_V128_B; \
+                for (int i = 0; i < 128/N; ++i) a_ptr->i##N[i] = (a_ptr->field[i] op b.field[i]) ? -1 : 0; \
+                ctx->sp--; break; \
+            }
+
             case WAH_OP_V128_NOT: {
                 wah_v128_t val = VSTACK_V128_TOP;
                 for (int i = 0; i < 16; ++i) val.u8[i] = ~val.u8[i];
@@ -3576,6 +3634,60 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             case WAH_OP_F64X2_MUL: V128_BINARY_OP_LANE_F(64, *, f64)
             case WAH_OP_F64X2_DIV: V128_BINARY_OP_LANE_F(64, /, f64)
 
+            case WAH_OP_I8X16_EQ: V128_CMP_I_LANE(8, ==, u8)
+            case WAH_OP_I8X16_NE: V128_CMP_I_LANE(8, !=, u8)
+            case WAH_OP_I8X16_LT_S: V128_CMP_I_LANE_S(8, <, i8)
+            case WAH_OP_I8X16_LT_U: V128_CMP_I_LANE_U(8, <, u8)
+            case WAH_OP_I8X16_GT_S: V128_CMP_I_LANE_S(8, >, i8)
+            case WAH_OP_I8X16_GT_U: V128_CMP_I_LANE_U(8, >, u8)
+            case WAH_OP_I8X16_LE_S: V128_CMP_I_LANE_S(8, <=, i8)
+            case WAH_OP_I8X16_LE_U: V128_CMP_I_LANE_U(8, <=, u8)
+            case WAH_OP_I8X16_GE_S: V128_CMP_I_LANE_S(8, >=, i8)
+            case WAH_OP_I8X16_GE_U: V128_CMP_I_LANE_U(8, >=, u8)
+
+            case WAH_OP_I16X8_EQ: V128_CMP_I_LANE(16, ==, u16)
+            case WAH_OP_I16X8_NE: V128_CMP_I_LANE(16, !=, u16)
+            case WAH_OP_I16X8_LT_S: V128_CMP_I_LANE_S(16, <, i16)
+            case WAH_OP_I16X8_LT_U: V128_CMP_I_LANE_U(16, <, u16)
+            case WAH_OP_I16X8_GT_S: V128_CMP_I_LANE_S(16, >, i16)
+            case WAH_OP_I16X8_GT_U: V128_CMP_I_LANE_U(16, >, u16)
+            case WAH_OP_I16X8_LE_S: V128_CMP_I_LANE_S(16, <=, i16)
+            case WAH_OP_I16X8_LE_U: V128_CMP_I_LANE_U(16, <=, u16)
+            case WAH_OP_I16X8_GE_S: V128_CMP_I_LANE_S(16, >=, i16)
+            case WAH_OP_I16X8_GE_U: V128_CMP_I_LANE_U(16, >=, u16)
+
+            case WAH_OP_I32X4_EQ: V128_CMP_I_LANE(32, ==, u32)
+            case WAH_OP_I32X4_NE: V128_CMP_I_LANE(32, !=, u32)
+            case WAH_OP_I32X4_LT_S: V128_CMP_I_LANE_S(32, <, i32)
+            case WAH_OP_I32X4_LT_U: V128_CMP_I_LANE_U(32, <, u32)
+            case WAH_OP_I32X4_GT_S: V128_CMP_I_LANE_S(32, >, i32)
+            case WAH_OP_I32X4_GT_U: V128_CMP_I_LANE_U(32, >, u32)
+            case WAH_OP_I32X4_LE_S: V128_CMP_I_LANE_S(32, <=, i32)
+            case WAH_OP_I32X4_LE_U: V128_CMP_I_LANE_U(32, <=, u32)
+            case WAH_OP_I32X4_GE_S: V128_CMP_I_LANE_S(32, >=, i32)
+            case WAH_OP_I32X4_GE_U: V128_CMP_I_LANE_U(32, >=, u32)
+
+            case WAH_OP_I64X2_EQ: V128_CMP_I_LANE(64, ==, u64)
+            case WAH_OP_I64X2_NE: V128_CMP_I_LANE(64, !=, u64)
+            case WAH_OP_I64X2_LT_S: V128_CMP_I_LANE_S(64, <, i64)
+            case WAH_OP_I64X2_GT_S: V128_CMP_I_LANE_S(64, >, i64)
+            case WAH_OP_I64X2_LE_S: V128_CMP_I_LANE_S(64, <=, i64)
+            case WAH_OP_I64X2_GE_S: V128_CMP_I_LANE_S(64, >=, i64)
+
+            case WAH_OP_F32X4_EQ: V128_CMP_F_LANE(32, ==, f32)
+            case WAH_OP_F32X4_NE: V128_CMP_F_LANE(32, !=, f32)
+            case WAH_OP_F32X4_LT: V128_CMP_F_LANE(32, <, f32)
+            case WAH_OP_F32X4_GT: V128_CMP_F_LANE(32, >, f32)
+            case WAH_OP_F32X4_LE: V128_CMP_F_LANE(32, <=, f32)
+            case WAH_OP_F32X4_GE: V128_CMP_F_LANE(32, >=, f32)
+
+            case WAH_OP_F64X2_EQ: V128_CMP_F_LANE(64, ==, f64)
+            case WAH_OP_F64X2_NE: V128_CMP_F_LANE(64, !=, f64)
+            case WAH_OP_F64X2_LT: V128_CMP_F_LANE(64, <, f64)
+            case WAH_OP_F64X2_GT: V128_CMP_F_LANE(64, >, f64)
+            case WAH_OP_F64X2_LE: V128_CMP_F_LANE(64, <=, f64)
+            case WAH_OP_F64X2_GE: V128_CMP_F_LANE(64, >=, f64)
+
 #undef VSTACK_V128_TOP
 #undef VSTACK_V128_B
 #undef VSTACK_V128_A
@@ -3585,6 +3697,10 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 #undef V128_BINARY_OP_LANE_SAT_S
 #undef V128_BINARY_OP_LANE_SAT_U
 #undef V128_BINARY_OP_LANE_F
+#undef V128_CMP_I_LANE
+#undef V128_CMP_I_LANE_S
+#undef V128_CMP_I_LANE_U
+#undef V128_CMP_F_LANE
 
             default:
                 err = WAH_ERROR_UNKNOWN_SECTION;
