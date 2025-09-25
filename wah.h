@@ -834,34 +834,14 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
 static void wah_free_parsed_code(wah_parsed_code_t *parsed_code);
 
 // WebAssembly canonical NaN bit patterns
-#define WASM_F32_CANONICAL_NAN_BITS 0x7fc00000U
-#define WASM_F64_CANONICAL_NAN_BITS 0x7ff8000000000000ULL
+//
+// Note that WebAssembly prior to 3.0 had *two* canonical NaNs varying only by their signs.
+// These are canonical in terms of the WebAssembly 3.0 deterministic profile, which needs a positive sign.
+static const union { uint32_t i; float f; } WAH_CANONICAL_NAN32 = { .i = 0x7fc00000U };
+static const union { uint64_t i; double f; } WAH_CANONICAL_NAN64 = { .i = 0x7ff8000000000000ULL };
 
-// Function to canonicalize a float NaN
-static inline float wah_canonicalize_f32(float val) {
-    // Check for NaN using val != val (IEEE 754 property)
-    if (val != val) {
-        uint32_t bits;
-        memcpy(&bits, &val, sizeof(uint32_t));
-        uint32_t sign_bit = bits & 0x80000000U; // Extract sign bit
-        bits = sign_bit | WASM_F32_CANONICAL_NAN_BITS; // Combine sign with canonical NaN
-        memcpy(&val, &bits, sizeof(uint32_t));
-    }
-    return val;
-}
-
-// Function to canonicalize a double NaN
-static inline double wah_canonicalize_f64(double val) {
-    // Check for NaN using val != val (IEEE 754 property)
-    if (val != val) {
-        uint64_t bits;
-        memcpy(&bits, &val, sizeof(uint64_t));
-        uint64_t sign_bit = bits & 0x8000000000000000ULL; // Extract sign bit
-        bits = sign_bit | WASM_F64_CANONICAL_NAN_BITS; // Combine sign with canonical NaN
-        memcpy(&val, &bits, sizeof(uint64_t));
-    }
-    return val;
-}
+static inline float wah_canonicalize_f32(float val) { return val == val ? val : WAH_CANONICAL_NAN32.f; }
+static inline double wah_canonicalize_f64(double val) { return val == val ? val : WAH_CANONICAL_NAN64.f; }
 
 // --- Integer Utility Functions ---
 
@@ -2095,14 +2075,14 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
             case WAH_OP_F32_CONST: {
                 WAH_ENSURE(global_declared_type == WAH_TYPE_F32, WAH_ERROR_VALIDATION_FAILED);
                 WAH_ENSURE(*ptr + 4 <= section_end, WAH_ERROR_UNEXPECTED_EOF);
-                module->globals[i].initial_value.f32 = wah_canonicalize_f32(wah_read_f32_le(*ptr));
+                module->globals[i].initial_value.f32 = wah_read_f32_le(*ptr);
                 *ptr += 4;
                 break;
             }
             case WAH_OP_F64_CONST: {
                 WAH_ENSURE(global_declared_type == WAH_TYPE_F64, WAH_ERROR_VALIDATION_FAILED);
                 WAH_ENSURE(*ptr + 8 <= section_end, WAH_ERROR_UNEXPECTED_EOF);
-                module->globals[i].initial_value.f64 = wah_canonicalize_f64(wah_read_f64_le(*ptr));
+                module->globals[i].initial_value.f64 = wah_read_f64_le(*ptr);
                 *ptr += 8;
                 break;
             }
@@ -3067,12 +3047,12 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 break;
             }
             case WAH_OP_F32_CONST: {
-                ctx->value_stack[ctx->sp++].f32 = wah_canonicalize_f32(wah_read_f32_le(bytecode_ip));
+                ctx->value_stack[ctx->sp++].f32 = wah_read_f32_le(bytecode_ip);
                 bytecode_ip += sizeof(float);
                 break;
             }
             case WAH_OP_F64_CONST: {
-                ctx->value_stack[ctx->sp++].f64 = wah_canonicalize_f64(wah_read_f64_le(bytecode_ip));
+                ctx->value_stack[ctx->sp++].f64 = wah_read_f64_le(bytecode_ip);
                 bytecode_ip += sizeof(double);
                 break;
             }
@@ -3240,12 +3220,12 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             #define BINOP_I(N,op) { VSTACK_A.i##N = (int##N##_t)((uint##N##_t)VSTACK_A.i##N op (uint##N##_t)VSTACK_B.i##N); ctx->sp--; break; }
             #define CMP_I_S(N,op) { VSTACK_A.i32 = VSTACK_A.i##N op VSTACK_B.i##N ? 1 : 0; ctx->sp--; break; }
             #define CMP_I_U(N,op) { VSTACK_A.i32 = (uint##N##_t)VSTACK_A.i##N op (uint##N##_t)VSTACK_B.i##N ? 1 : 0; ctx->sp--; break; }
-            #define BINOP_F(N,op) { VSTACK_A.f##N = VSTACK_A.f##N op VSTACK_B.f##N; ctx->sp--; break; }
+            #define BINOP_F(N,op) { VSTACK_A.f##N = wah_canonicalize_f##N(VSTACK_A.f##N op VSTACK_B.f##N); ctx->sp--; break; }
             #define CMP_F(N,op)   { VSTACK_A.i32 = VSTACK_A.f##N op VSTACK_B.f##N ? 1 : 0; ctx->sp--; break; }
             #define UNOP_I_FN(N,fn)  { VSTACK_TOP.i##N = (int##N##_t)fn((uint##N##_t)VSTACK_TOP.i##N); break; }
             #define BINOP_I_FN(N,fn) { VSTACK_A.i##N = (int##N##_t)fn((uint##N##_t)VSTACK_A.i##N, (uint##N##_t)VSTACK_B.i##N); ctx->sp--; break; }
-            #define UNOP_F_FN(N,fn)  { VSTACK_TOP.f##N = fn(VSTACK_TOP.f##N); break; }
-            #define BINOP_F_FN(N,fn) { VSTACK_A.f##N = fn(VSTACK_A.f##N, VSTACK_B.f##N); ctx->sp--; break; }
+            #define UNOP_F_FN(N,fn)  { VSTACK_TOP.f##N = wah_canonicalize_f##N(fn(VSTACK_TOP.f##N)); break; }
+            #define BINOP_F_FN(N,fn) { VSTACK_A.f##N = wah_canonicalize_f##N(fn(VSTACK_A.f##N, VSTACK_B.f##N)); ctx->sp--; break; }
 
 #define NUM_OPS(N,F) \
             case WAH_OP_I##N##_CLZ: UNOP_I_FN(N, wah_clz_u##N) \
@@ -3365,8 +3345,8 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 
             case WAH_OP_I32_STORE: STORE_OP(32, u32, i32, int32_t, (uint32_t))
             case WAH_OP_I64_STORE: STORE_OP(64, u64, i64, int64_t, (uint64_t))
-            case WAH_OP_F32_STORE: STORE_OP(32, f32, f32, float, wah_canonicalize_f32)
-            case WAH_OP_F64_STORE: STORE_OP(64, f64, f64, double, wah_canonicalize_f64)
+            case WAH_OP_F32_STORE: STORE_OP(32, f32, f32, float, )
+            case WAH_OP_F64_STORE: STORE_OP(64, f64, f64, double, )
             case WAH_OP_I32_STORE8: STORE_OP(8, u8, i32, int32_t, (uint8_t))
             case WAH_OP_I32_STORE16: STORE_OP(16, u16, i32, int32_t, (uint16_t))
             case WAH_OP_I64_STORE8: STORE_OP(8, u8, i64, int64_t, (uint8_t))
@@ -3740,7 +3720,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             }
 #define V128_BINARY_OP_LANE_F(N, op, field) { \
                 for (int i = 0; i < 128/N; ++i) { \
-                    VSTACK_V128_A.field[i] = VSTACK_V128_A.field[i] op VSTACK_V128_B.field[i]; \
+                    VSTACK_V128_A.field[i] = wah_canonicalize_##field(VSTACK_V128_A.field[i] op VSTACK_V128_B.field[i]); \
                 } \
                 ctx->sp--; \
                 break; \
