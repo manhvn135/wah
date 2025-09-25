@@ -3002,13 +3002,21 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, uint32_t func_idx, ui
         bytecode_base = frame->code->parsed_code.bytecode; \
     } while (0)
 
-#ifdef __has_attribute
-#if __has_attribute(musttail)
-#define WAH_USE_MUSTTAIL // clang 13+, GCC 15+
-#endif
+#ifdef WAH_FORCE_MUSTTAIL
+    #define WAH_USE_MUSTTAIL
+#elif defined(__has_attribute)
+    #if __has_attribute(musttail)
+        #define WAH_USE_MUSTTAIL // clang 13+, GCC 15+
+    #endif
 #endif
 
-#ifdef WAH_USE_MUSTTAIL
+#ifdef WAH_FORCE_COMPUTED_GOTO
+    #define WAH_USE_COMPUTED_GOTO
+#elif defined(__GNUC__) || defined(__clang__)
+    #define WAH_USE_COMPUTED_GOTO
+#endif
+
+#if defined(WAH_USE_MUSTTAIL) // --- Tail recursion dispatch ---
 
 #define WAH_RUN(opcode) \
     static wah_error_t wah_run_##opcode(wah_exec_context_t *ctx, wah_call_frame_t *frame, \
@@ -3030,7 +3038,30 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, uint32_t func_idx, ui
 static wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *frame,
                                   const uint8_t *bytecode_ip, const uint8_t *bytecode_base, wah_error_t err);
 
-#else
+#elif defined(WAH_USE_COMPUTED_GOTO) // --- Computed GOTO dispatch ---
+
+static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
+    wah_error_t err = WAH_OK;
+
+    // These are pointers to the current frame's state for faster access.
+    wah_call_frame_t *frame = &ctx->call_stack[ctx->call_depth - 1];
+    const uint8_t *bytecode_ip = frame->bytecode_ip;
+    const uint8_t *bytecode_base = frame->code->parsed_code.bytecode;
+
+    // Computed goto jump table
+    static const void* wah_opcode_labels[] = {
+#define WAH_OPCODE_LABEL(name, val) [WAH_OP_##name] = &&wah_op_##name,
+        WAH_OPCODES(WAH_OPCODE_LABEL)
+#undef WAH_OPCODE_LABEL
+    };
+
+    goto *wah_opcode_labels[wah_read_u16_le(bytecode_ip)];
+
+    #define WAH_RUN(opcode) wah_op_##opcode: bytecode_ip += sizeof(uint16_t);
+    #define WAH_NEXT() goto *wah_opcode_labels[wah_read_u16_le(bytecode_ip)]
+    #define WAH_CLEANUP() goto cleanup
+
+#else // --- Default switch-based interpreter ---
 
 static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     wah_error_t err = WAH_OK;
@@ -3046,9 +3077,9 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 
         switch (opcode) {
 
-#define WAH_RUN(opcode) break; case WAH_OP_##opcode:
-#define WAH_NEXT() break
-#define WAH_CLEANUP() goto cleanup
+        #define WAH_RUN(opcode) break; case WAH_OP_##opcode:
+        #define WAH_NEXT() break
+        #define WAH_CLEANUP() goto cleanup
 
 #endif
 
@@ -4025,8 +4056,11 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 }
 
 #else
+
+#ifndef WAH_USE_COMPUTED_GOTO
         }
     }
+#endif
 
 cleanup:
     if (ctx->call_depth > 0) {

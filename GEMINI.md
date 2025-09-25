@@ -14,6 +14,17 @@ The WAH interpreter employs a two-pass approach for efficient WebAssembly module
 
 2. **Custom Call Stack:** Unlike traditional compiled code that relies on the host system's call stack, WAH implements its own explicit call stack (`wah_call_frame_t` within `wah_exec_context_t`). This custom stack manages function call frames, instruction pointers, and local variable offsets. This design choice ensures portability across different environments and provides fine-grained control over the execution state, preventing host stack overflow issues and enabling features like stack inspection if needed.
 
+3. **Interpreter Dispatch Strategy:** The WAH interpreter supports two main dispatch strategies for executing pre-parsed bytecode, controlled by the `WAH_USE_MUSTTAIL` macro:
+
+   - **Switch-based Interpreter:** This traditional approach uses a central `while` loop that fetches each opcode and dispatches to a large `switch` statement. Each `case` within the `switch` handles a specific opcode's logic. While straightforward to implement, it can incur overhead from branch prediction misses and the `switch` statement itself.
+
+   - **Computed Goto Interpreter:** When `WAH_USE_COMPUTED_GOTO` is defined (automatically enabled for GCC/Clang compilers), the interpreter utilizes a "computed goto" or "direct threading" dispatch mechanism. This approach creates a jump table where each entry is the address of the code that implements a specific opcode. After an opcode's logic is executed, the interpreter directly jumps to the next opcode's handler by looking up its address in the jump table. This method significantly reduces dispatch overhead compared to a switch-based interpreter by eliminating the need for repeated `switch` statement evaluations and improving branch prediction. It offers performance benefits similar to direct threaded code but uses `goto *address;` instead of tail calls.
+
+   - **Direct Threaded Code Interpreter:** When `WAH_USE_MUSTTAIL` is defined (automatically enabled for recent enough GCC/Clang), the interpreter leverages C compiler extensions (like GCC/Clang's `__attribute__((musttail))`) for **tail call optimization**. Instead of a central `switch` loop, each opcode's logic is encapsulated in a dedicated function (e.g., `wah_run_I32_CONST` for `WAH_OP_I32_CONST`). After an opcode is executed, the `WAH_NEXT()` macro performs a tail-recursive call to a dispatcher function (`wah_run_single`), which then tail-calls the next opcode's handler. This effectively transforms function calls into direct jumps between opcode handlers, significantly reducing dispatch overhead and improving performance by:
+     - Minimizing stack usage, as new stack frames are not pushed for each instruction dispatch.
+     - Improving branch prediction, as the flow of control is more direct.
+     This strategy is generally faster for interpreters due to its reduced overhead compared to switch-based dispatch.
+
 ## Error Handling
 
 All public API functions return a `wah_error_t` enum value. `WAH_OK` indicates success, while other values signify specific errors such as invalid WASM format, out-of-memory conditions, or runtime traps. Use `wah_strerror(err)` to get a human-readable description of an error.

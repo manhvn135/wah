@@ -297,6 +297,41 @@ static int test_deferred_data_validation_failure() {
     return 0;
 }
 
+// Test case for an unused opcode (0x09) in the code section
+static int test_unused_opcode_validation_failure() {
+    printf("Running test_unused_opcode_validation_failure...\n");
+    const uint8_t wasm_binary[] = {
+        0x00, 0x61, 0x73, 0x6d, // Magic
+        0x01, 0x00, 0x00, 0x00, // Version
+
+        // Type section (1)
+        0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // (func) -> ()
+
+        // Function section (3)
+        0x03, 0x02, 0x01, 0x00, // func 0 uses type 0
+
+        // Code section (10)
+        0x0a, 0x05, 0x01, // Section ID, size, count
+        0x03, // Code body size for func 0 (0 locals + 2 bytes for opcode + end)
+        0x00, // 0 locals
+        0x09, // Unused opcode (0x09)
+        0x0b, // End opcode
+    };
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_unused_opcode_validation_failure FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: Unused opcode correctly failed validation.\n");
+    return 0;
+}
+
 int main(void) {
     int result = 0;
 
@@ -325,6 +360,7 @@ int main(void) {
     result |= test_function_section_no_code_section();
     result |= test_parse_data_no_datacount_memory_init_fails();
     result |= test_deferred_data_validation_failure();
+    result |= test_unused_opcode_validation_failure();
 
     if (result == 0) {
         printf("All parser tests passed!\n");
