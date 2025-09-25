@@ -287,6 +287,15 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
     X(V128_LOAD8_LANE, 0xD054) X(V128_LOAD16_LANE, 0xD055) X(V128_LOAD32_LANE, 0xD056) X(V128_LOAD64_LANE, 0xD057) \
     X(V128_STORE, 0xD00B) \
     \
+    /* Vector Lane Operations */ \
+    X(I8X16_SHUFFLE, 0xD00D) X(I8X16_SWIZZLE, 0xD00E) \
+    X(I8X16_EXTRACT_LANE_S, 0xD015) X(I8X16_EXTRACT_LANE_U, 0xD016) X(I8X16_REPLACE_LANE, 0xD017) \
+    X(I16X8_EXTRACT_LANE_S, 0xD018) X(I16X8_EXTRACT_LANE_U, 0xD019) X(I16X8_REPLACE_LANE, 0xD01A) \
+    X(I32X4_EXTRACT_LANE, 0xD01B) X(I32X4_REPLACE_LANE, 0xD01C) X(I64X2_EXTRACT_LANE, 0xD01D) X(I64X2_REPLACE_LANE, 0xD01E) \
+    X(F32X4_EXTRACT_LANE, 0xD01F) X(F32X4_REPLACE_LANE, 0xD020) X(F64X2_EXTRACT_LANE, 0xD021) X(F64X2_REPLACE_LANE, 0xD022) \
+    X(I8X16_SPLAT, 0xD00F) X(I16X8_SPLAT, 0xD010) X(I32X4_SPLAT, 0xD011) X(I64X2_SPLAT, 0xD012) \
+    X(F32X4_SPLAT, 0xD013) X(F64X2_SPLAT, 0xD014) \
+    \
     /* Constants */ \
     X(I32_CONST, 0x41) X(I64_CONST, 0x42) X(F32_CONST, 0x43) X(F64_CONST, 0x44) X(V128_CONST, 0xD00C) \
     \
@@ -1227,15 +1236,41 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         }
 
 #define LOAD_V128_LANE_OP(max_lg_align) { \
-            uint32_t align, offset, lane_idx; \
+            uint32_t align, offset; \
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &align)); \
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &offset)); \
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &lane_idx)); \
+            WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF); \
+            uint8_t lane_idx = *(*code_ptr)++; \
             WAH_ENSURE(align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
             WAH_ENSURE(lane_idx < (16 >> max_lg_align), WAH_ERROR_VALIDATION_FAILED); \
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32)); \
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128)); \
             return wah_validation_push_type(vctx, WAH_TYPE_V128); \
+        }
+
+#define EXTRACT_LANE_OP(SCALAR_TYPE, LANE_COUNT) { \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128)); \
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_##SCALAR_TYPE)); \
+            WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF); \
+            uint8_t lane_idx = *(*code_ptr)++; \
+            WAH_ENSURE(lane_idx < LANE_COUNT, WAH_ERROR_VALIDATION_FAILED); \
+            break; \
+        }
+
+#define REPLACE_LANE_OP(SCALAR_TYPE, LANE_COUNT) { \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_##SCALAR_TYPE)); \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128)); \
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_V128)); \
+            WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF); \
+            uint8_t lane_idx = *(*code_ptr)++; \
+            WAH_ENSURE(lane_idx < LANE_COUNT, WAH_ERROR_VALIDATION_FAILED); \
+            break; \
+        }
+
+#define SPLAT_OP(SCALAR_TYPE) { \
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_##SCALAR_TYPE)); \
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_V128)); \
+            break; \
         }
 
         case WAH_OP_I32_LOAD: LOAD_OP(I32, 2)
@@ -1273,9 +1308,51 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_V128_LOAD32_LANE: LOAD_V128_LANE_OP(2)
         case WAH_OP_V128_LOAD64_LANE: LOAD_V128_LANE_OP(3)
 
+        /* Vector Lane Operations */
+        case WAH_OP_I8X16_SHUFFLE: {
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128)); // vector2
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128)); // vector1
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_V128));
+            for (int i = 0; i < 16; i++) WAH_ENSURE((*code_ptr)[i] < 32, WAH_ERROR_VALIDATION_FAILED);
+            *code_ptr += 16; // 16 immediate bytes for the shuffle mask
+            break;
+        }
+        case WAH_OP_I8X16_SWIZZLE: {
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128)); // mask
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_V128)); // data
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_V128));
+            break;
+        }
+
+        case WAH_OP_I8X16_EXTRACT_LANE_S: EXTRACT_LANE_OP(I32, 16)
+        case WAH_OP_I8X16_EXTRACT_LANE_U: EXTRACT_LANE_OP(I32, 16)
+        case WAH_OP_I8X16_REPLACE_LANE: REPLACE_LANE_OP(I32, 16)
+        case WAH_OP_I16X8_EXTRACT_LANE_S: EXTRACT_LANE_OP(I32, 8)
+        case WAH_OP_I16X8_EXTRACT_LANE_U: EXTRACT_LANE_OP(I32, 8)
+        case WAH_OP_I16X8_REPLACE_LANE: REPLACE_LANE_OP(I32, 8)
+        case WAH_OP_I32X4_EXTRACT_LANE: EXTRACT_LANE_OP(I32, 4)
+        case WAH_OP_I32X4_REPLACE_LANE: REPLACE_LANE_OP(I32, 4)
+        case WAH_OP_I64X2_EXTRACT_LANE: EXTRACT_LANE_OP(I64, 2)
+        case WAH_OP_I64X2_REPLACE_LANE: REPLACE_LANE_OP(I64, 2)
+        case WAH_OP_F32X4_EXTRACT_LANE: EXTRACT_LANE_OP(F32, 4)
+        case WAH_OP_F32X4_REPLACE_LANE: REPLACE_LANE_OP(F32, 4)
+        case WAH_OP_F64X2_EXTRACT_LANE: EXTRACT_LANE_OP(F64, 2)
+        case WAH_OP_F64X2_REPLACE_LANE: REPLACE_LANE_OP(F64, 2)
+
+        case WAH_OP_I8X16_SPLAT: case WAH_OP_I16X8_SPLAT: case WAH_OP_I32X4_SPLAT: SPLAT_OP(I32)
+        case WAH_OP_I64X2_SPLAT: SPLAT_OP(I64)
+        case WAH_OP_F32X4_SPLAT: SPLAT_OP(F32)
+        case WAH_OP_F64X2_SPLAT: SPLAT_OP(F64)
+
 #undef LOAD_OP
 #undef STORE_OP
 #undef LOAD_V128_LANE_OP
+#undef EXTRACT_LANE_OP
+#undef REPLACE_LANE_OP
+#undef SPLAT_OP
+#undef EXTRACT_LANE_OP
+#undef REPLACE_LANE_OP
+#undef SPLAT_OP
 
         case WAH_OP_MEMORY_SIZE: {
             uint32_t mem_idx;
@@ -2426,6 +2503,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 preparsed_instr_size += sizeof(uint32_t); // For offset (ignore align)
                 break;
             }
+
             case WAH_OP_V128_LOAD8_LANE: case WAH_OP_V128_LOAD16_LANE:
             case WAH_OP_V128_LOAD32_LANE: case WAH_OP_V128_LOAD64_LANE: {
                 uint32_t a, o, l;
@@ -2435,6 +2513,18 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 preparsed_instr_size += sizeof(uint32_t) * 2; // For offset and lane_idx
                 break;
             }
+            case WAH_OP_I8X16_SHUFFLE: ptr += 16; preparsed_instr_size += 16; break;
+            case WAH_OP_I8X16_EXTRACT_LANE_S: case WAH_OP_I8X16_EXTRACT_LANE_U: case WAH_OP_I8X16_REPLACE_LANE:
+            case WAH_OP_I16X8_EXTRACT_LANE_S: case WAH_OP_I16X8_EXTRACT_LANE_U: case WAH_OP_I16X8_REPLACE_LANE:
+            case WAH_OP_I32X4_EXTRACT_LANE: case WAH_OP_I32X4_REPLACE_LANE:
+            case WAH_OP_I64X2_EXTRACT_LANE: case WAH_OP_I64X2_REPLACE_LANE:
+            case WAH_OP_F32X4_EXTRACT_LANE: case WAH_OP_F32X4_REPLACE_LANE:
+            case WAH_OP_F64X2_EXTRACT_LANE: case WAH_OP_F64X2_REPLACE_LANE: {
+                ptr += 1;
+                preparsed_instr_size += 1;
+                break;
+            }
+
             case WAH_OP_MEMORY_SIZE: case WAH_OP_MEMORY_GROW: case WAH_OP_MEMORY_FILL: {
                 uint32_t m;
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &m), cleanup);
@@ -2583,6 +2673,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 write_ptr += sizeof(uint32_t);
                 break;
             }
+
             case WAH_OP_V128_LOAD8_LANE: case WAH_OP_V128_LOAD16_LANE:
             case WAH_OP_V128_LOAD32_LANE: case WAH_OP_V128_LOAD64_LANE: {
                 uint32_t a, o, l;
@@ -2595,6 +2686,22 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 write_ptr += sizeof(uint32_t);
                 break;
             }
+            case WAH_OP_I8X16_SHUFFLE: {
+                memcpy(write_ptr, ptr, 16); 
+                ptr += 16; 
+                write_ptr += 16; 
+                break;
+            }
+            case WAH_OP_I8X16_EXTRACT_LANE_S: case WAH_OP_I8X16_EXTRACT_LANE_U: case WAH_OP_I8X16_REPLACE_LANE:
+            case WAH_OP_I16X8_EXTRACT_LANE_S: case WAH_OP_I16X8_EXTRACT_LANE_U: case WAH_OP_I16X8_REPLACE_LANE:
+            case WAH_OP_I32X4_EXTRACT_LANE: case WAH_OP_I32X4_REPLACE_LANE:
+            case WAH_OP_I64X2_EXTRACT_LANE: case WAH_OP_I64X2_REPLACE_LANE:
+            case WAH_OP_F32X4_EXTRACT_LANE: case WAH_OP_F32X4_REPLACE_LANE:
+            case WAH_OP_F64X2_EXTRACT_LANE: case WAH_OP_F64X2_REPLACE_LANE: {
+                *write_ptr++ = *ptr++;
+                break;
+            }
+
             case WAH_OP_MEMORY_SIZE: case WAH_OP_MEMORY_GROW: case WAH_OP_MEMORY_FILL: {
                 uint32_t m;
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &m), cleanup);
@@ -3504,6 +3611,86 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
                 memcpy(ctx->memory_base + effective_addr, &val, sizeof(wah_v128_t));
                 break;
             }
+
+#define EXTRACT_LANE_OP(VEC_TYPE, SCALAR_TYPE, LANE_COUNT) { \
+            wah_v128_t vec = ctx->value_stack[--ctx->sp].v128; \
+            uint8_t laneidx = *bytecode_ip++; \
+            WAH_ENSURE(laneidx < LANE_COUNT, WAH_ERROR_TRAP); \
+            wah_value_t result; \
+            result.SCALAR_TYPE = vec.VEC_TYPE[laneidx]; \
+            ctx->value_stack[ctx->sp++] = result; \
+            break; \
+        }
+
+#define REPLACE_LANE_OP(VEC_TYPE, C_VEC_TYPE, SCALAR_TYPE, LANE_COUNT) { \
+            wah_value_t scalar_val = ctx->value_stack[--ctx->sp]; \
+            wah_v128_t vec = ctx->value_stack[--ctx->sp].v128; \
+            uint8_t laneidx = *bytecode_ip++; \
+            WAH_ENSURE(laneidx < LANE_COUNT, WAH_ERROR_TRAP); \
+            vec.VEC_TYPE[laneidx] = (C_VEC_TYPE)scalar_val.SCALAR_TYPE; \
+            ctx->value_stack[ctx->sp++].v128 = vec; \
+            break; \
+        }
+
+#define SPLAT_OP(VEC_TYPE, C_VEC_TYPE, SCALAR_TYPE) { \
+            wah_value_t scalar_val = ctx->value_stack[--ctx->sp]; \
+            wah_v128_t result; \
+            for (uint32_t i = 0; i < sizeof(wah_v128_t) / sizeof(result.VEC_TYPE[0]); ++i) { \
+                result.VEC_TYPE[i] = (C_VEC_TYPE)scalar_val.SCALAR_TYPE; \
+            } \
+            ctx->value_stack[ctx->sp++].v128 = result; \
+            break; \
+        }
+
+        case WAH_OP_I8X16_SHUFFLE: {
+            wah_v128_t vec2 = ctx->value_stack[--ctx->sp].v128;
+            wah_v128_t vec1 = ctx->value_stack[--ctx->sp].v128;
+            wah_v128_t result;
+            for (uint32_t i = 0; i < 16; ++i) {
+                uint8_t lane_idx = bytecode_ip[i];
+                result.u8[i] = lane_idx < 16 ? vec1.u8[lane_idx] : vec2.u8[lane_idx - 16];
+            }
+            bytecode_ip += 16; // Advance past the shuffle mask
+            ctx->value_stack[ctx->sp++].v128 = result;
+            break;
+        }
+        case WAH_OP_I8X16_SWIZZLE: {
+            wah_v128_t mask = ctx->value_stack[--ctx->sp].v128;
+            wah_v128_t data = ctx->value_stack[--ctx->sp].v128;
+            wah_v128_t result;
+            for (uint32_t i = 0; i < 16; ++i) {
+                uint8_t lane_idx = mask.u8[i];
+                result.u8[i] = lane_idx < 16 ? data.u8[lane_idx] : 0;
+            }
+            ctx->value_stack[ctx->sp++].v128 = result;
+            break;
+        }
+
+        case WAH_OP_I8X16_EXTRACT_LANE_S: EXTRACT_LANE_OP(i8, i32, 16)
+        case WAH_OP_I8X16_EXTRACT_LANE_U: EXTRACT_LANE_OP(u8, i32, 16)
+        case WAH_OP_I8X16_REPLACE_LANE: REPLACE_LANE_OP(i8, int8_t, i32, 16)
+        case WAH_OP_I16X8_EXTRACT_LANE_S: EXTRACT_LANE_OP(i16, i32, 8)
+        case WAH_OP_I16X8_EXTRACT_LANE_U: EXTRACT_LANE_OP(u16, i32, 8)
+        case WAH_OP_I16X8_REPLACE_LANE: REPLACE_LANE_OP(i16, int16_t, i32, 8)
+        case WAH_OP_I32X4_EXTRACT_LANE: EXTRACT_LANE_OP(i32, i32, 4)
+        case WAH_OP_I32X4_REPLACE_LANE: REPLACE_LANE_OP(i32, int32_t, i32, 4)
+        case WAH_OP_I64X2_EXTRACT_LANE: EXTRACT_LANE_OP(i64, i64, 2)
+        case WAH_OP_I64X2_REPLACE_LANE: REPLACE_LANE_OP(i64, int64_t, i64, 2)
+        case WAH_OP_F32X4_EXTRACT_LANE: EXTRACT_LANE_OP(f32, f32, 4)
+        case WAH_OP_F32X4_REPLACE_LANE: REPLACE_LANE_OP(f32, float, f32, 4)
+        case WAH_OP_F64X2_EXTRACT_LANE: EXTRACT_LANE_OP(f64, f64, 2)
+        case WAH_OP_F64X2_REPLACE_LANE: REPLACE_LANE_OP(f64, double, f64, 2)
+
+        case WAH_OP_I8X16_SPLAT: SPLAT_OP(i8, int8_t, i32)
+        case WAH_OP_I16X8_SPLAT: SPLAT_OP(i16, int16_t, i32)
+        case WAH_OP_I32X4_SPLAT: SPLAT_OP(i32, int32_t, i32)
+        case WAH_OP_I64X2_SPLAT: SPLAT_OP(i64, int64_t, i64)
+        case WAH_OP_F32X4_SPLAT: SPLAT_OP(f32, float, f32)
+        case WAH_OP_F64X2_SPLAT: SPLAT_OP(f64, double, f64)
+
+#undef EXTRACT_LANE_OP
+#undef REPLACE_LANE_OP
+#undef SPLAT_OP
 
             #define VSTACK_V128_TOP (ctx->value_stack[ctx->sp - 1].v128)
             #define VSTACK_V128_B (ctx->value_stack[ctx->sp - 1].v128)
