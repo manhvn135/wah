@@ -506,6 +506,81 @@ int test_i32_trunc_sat_f64_u() {
     return failures;
 }
 
+int test_i32_extend8_s() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7f, 0x7f, 0xC0);
+
+    printf("\n=== Testing I32.EXTEND8_S ===\n");
+    CHECK_UNARY("I32.EXTEND8_S (0x7F)", i32, 0x7F, i32, 0x7F);
+    CHECK_UNARY("I32.EXTEND8_S (0x80)", i32, 0x80, i32, (int32_t)0xFFFFFF80);
+    CHECK_UNARY("I32.EXTEND8_S (0xFF)", i32, 0xFF, i32, (int32_t)0xFFFFFFFF);
+    CHECK_UNARY("I32.EXTEND8_S (0x00000001)", i32, 0x00000001, i32, 0x00000001);
+    CHECK_UNARY("I32.EXTEND8_S (0x12345678)", i32, 0x12345678, i32, 0x00000078);
+    CHECK_UNARY("I32.EXTEND8_S (0x90ABCDEF)", i32, 0x90ABCDEF, i32, 0xFFFFFFEF);
+    CHECK_UNARY("I32.EXTEND8_S (0xFFFFFFFF)", i32, 0xFFFFFFFF, i32, (int32_t)0xFFFFFFFF);
+    return failures;
+}
+
+int test_i32_extend16_s() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7f, 0x7f, 0xC1);
+
+    printf("\n=== Testing I32.EXTEND16_S ===\n");
+    CHECK_UNARY("I32.EXTEND16_S (0x7FFF)", i32, 0x7FFF, i32, 0x7FFF);
+    CHECK_UNARY("I32.EXTEND16_S (0x8000)", i32, 0x8000, i32, (int32_t)0xFFFF8000);
+    CHECK_UNARY("I32.EXTEND16_S (0xFFFF)", i32, 0xFFFF, i32, (int32_t)0xFFFFFFFF);
+    CHECK_UNARY("I32.EXTEND16_S (0x00000001)", i32, 0x00000001, i32, 0x00000001);
+    CHECK_UNARY("I32.EXTEND16_S (0x12345678)", i32, 0x12345678, i32, 0x00005678);
+    CHECK_UNARY("I32.EXTEND16_S (0x90ABCDEF)", i32, 0x90ABCDEF, i32, 0xFFFFCDEF);
+    CHECK_UNARY("I32.EXTEND16_S (0xFFFFFFFF)", i32, 0xFFFFFFFF, i32, (int32_t)0xFFFFFFFF);
+    return failures;
+}
+
+int test_i64_extend8_s() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7e, 0x7e, 0xC2);
+
+    printf("\n=== Testing I64.EXTEND8_S ===\n");
+    CHECK_UNARY("I64.EXTEND8_S (0x7F)", i64, 0x7F, i64, 0x7FLL);
+    CHECK_UNARY("I64.EXTEND8_S (0x80)", i64, 0x80, i64, (int64_t)0xFFFFFFFFFFFFFF80LL);
+    CHECK_UNARY("I64.EXTEND8_S (0xFF)", i64, 0xFF, i64, (int64_t)0xFFFFFFFFFFFFFFFFLL);
+    CHECK_UNARY("I64.EXTEND8_S (0x0000000000000001)", i64, 0x0000000000000001LL, i64, 0x0000000000000001LL);
+    CHECK_UNARY("I64.EXTEND8_S (0x1234567890ABCDEF)", i64, 0x1234567890ABCDEFLL, i64, (int64_t)0xFFFFFFFFFFFFFFEFLL);
+    CHECK_UNARY("I64.EXTEND8_S (0xFDECBA9876543210)", i64, 0xFDECBA9876543210LL, i64, 0x0000000000000010LL);
+    CHECK_UNARY("I64.EXTEND8_S (0xFFFFFFFFFFFFFFFF)", i64, 0xFFFFFFFFFFFFFFFFLL, i64, (int64_t)0xFFFFFFFFFFFFFFFFLL);
+    return failures;
+}
+
+int test_i64_extend16_s() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7e, 0x7e, 0xC3);
+
+    printf("\n=== Testing I64.EXTEND16_S ===\n");
+    CHECK_UNARY("I64.EXTEND16_S (0x7FFF)", i64, 0x7FFF, i64, 0x7FFFLL);
+    CHECK_UNARY("I64.EXTEND16_S (0x8000)", i64, 0x8000, i64, (int64_t)0xFFFFFFFFFFFF8000LL);
+    CHECK_UNARY("I64.EXTEND16_S (0xFFFF)", i64, 0xFFFF, i64, (int64_t)0xFFFFFFFFFFFFFFFFLL);
+    CHECK_UNARY("I64.EXTEND16_S (0x0000000000000001)", i64, 0x0000000000000001LL, i64, 0x0000000000000001LL);
+    CHECK_UNARY("I64.EXTEND16_S (0x1234567890ABCDEF)", i64, 0x1234567890ABCDEFLL, i64, (int64_t)0xFFFFFFFFFFFFCDEFLL);
+    CHECK_UNARY("I64.EXTEND16_S (0xFDECBA9876543210)", i64, 0xFDECBA9876543210LL, i64, 0x0000000000003210LL);
+    CHECK_UNARY("I64.EXTEND16_S (0xFFFFFFFFFFFFFFFF)", i64, 0xFFFFFFFFFFFFFFFFLL, i64, (int64_t)0xFFFFFFFFFFFFFFFFLL);
+    return failures;
+}
+
+int test_i64_extend32_s() {
+    int failures = 0;
+    static const uint8_t test_wasm[] = UNARY_TEST_WASM(0x7e, 0x7e, 0xC4);
+
+    printf("\n=== Testing I64.EXTEND32_S ===\n");
+    CHECK_UNARY("I64.EXTEND32_S (0x7FFFFFFF)", i64, 0x7FFFFFFF, i64, 0x7FFFFFFFLL);
+    CHECK_UNARY("I64.EXTEND32_S (0x80000000)", i64, 0x80000000, i64, (int64_t)0xFFFFFFFF80000000LL);
+    CHECK_UNARY("I64.EXTEND32_S (0xFFFFFFFF)", i64, 0xFFFFFFFF, i64, (int64_t)0xFFFFFFFFFFFFFFFFLL);
+    CHECK_UNARY("I64.EXTEND32_S (0x0000000000000001)", i64, 0x0000000000000001LL, i64, 0x0000000000000001LL);
+    CHECK_UNARY("I64.EXTEND32_S (0x1234567890ABCDEF)", i64, 0x1234567890ABCDEFLL, i64, (int64_t)0xFFFFFFFF90ABCDEFLL);
+    CHECK_UNARY("I64.EXTEND32_S (0xFDECBA9876543210)", i64, 0xFDECBA9876543210LL, i64, 0x0000000076543210LL);
+    CHECK_UNARY("I64.EXTEND32_S (0xFFFFFFFFFFFFFFFF)", i64, 0xFFFFFFFFFFFFFFFFLL, i64, (int64_t)0xFFFFFFFFFFFFFFFFLL);
+    return failures;
+}
+
 int test_i64_trunc_sat_f32_s() {
     int failures = 0;
     static const uint8_t test_wasm[] = UNARY_TEST_WASM_FC(0x7d, 0x7e, 0x04);
@@ -616,6 +691,12 @@ int main() {
     total_failures += test_i64_trunc_sat_f32_u();
     total_failures += test_i64_trunc_sat_f64_s();
     total_failures += test_i64_trunc_sat_f64_u();
+
+    total_failures += test_i32_extend8_s();
+    total_failures += test_i32_extend16_s();
+    total_failures += test_i64_extend8_s();
+    total_failures += test_i64_extend16_s();
+    total_failures += test_i64_extend32_s();
 
     if (total_failures > 0) {
         printf("\nSUMMARY: %d test(s) FAILED!\n", total_failures);

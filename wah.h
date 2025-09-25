@@ -359,6 +359,7 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
     X(F32_CONVERT_I32_S, 0xB2) X(F32_CONVERT_I32_U, 0xB3) X(F32_CONVERT_I64_S, 0xB4) X(F32_CONVERT_I64_U, 0xB5) X(F32_DEMOTE_F64, 0xB6) \
     X(F64_CONVERT_I32_S, 0xB7) X(F64_CONVERT_I32_U, 0xB8) X(F64_CONVERT_I64_S, 0xB9) X(F64_CONVERT_I64_U, 0xBA) X(F64_PROMOTE_F32, 0xBB) \
     X(I32_REINTERPRET_F32, 0xBC) X(I64_REINTERPRET_F64, 0xBD) X(F32_REINTERPRET_I32, 0xBE) X(F64_REINTERPRET_I64, 0xBF) \
+    X(I32_EXTEND8_S, 0xC0) X(I32_EXTEND16_S, 0xC1) X(I64_EXTEND8_S, 0xC2) X(I64_EXTEND16_S, 0xC3) X(I64_EXTEND32_S, 0xC4) \
     X(I32_TRUNC_SAT_F32_S, 0xC000) X(I32_TRUNC_SAT_F32_U, 0xC001) X(I32_TRUNC_SAT_F64_S, 0xC002) X(I32_TRUNC_SAT_F64_U, 0xC003) \
     X(I64_TRUNC_SAT_F32_S, 0xC004) X(I64_TRUNC_SAT_F32_U, 0xC005) X(I64_TRUNC_SAT_F64_S, 0xC006) X(I64_TRUNC_SAT_F64_U, 0xC007)
 
@@ -1642,6 +1643,12 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_I64_REINTERPRET_F64: POP_PUSH(F64, I64)
         case WAH_OP_F32_REINTERPRET_I32: POP_PUSH(I32, F32)
         case WAH_OP_F64_REINTERPRET_I64: POP_PUSH(I64, F64)
+
+        case WAH_OP_I32_EXTEND8_S: POP_PUSH(I32, I32)
+        case WAH_OP_I32_EXTEND16_S: POP_PUSH(I32, I32)
+        case WAH_OP_I64_EXTEND8_S: POP_PUSH(I64, I64)
+        case WAH_OP_I64_EXTEND16_S: POP_PUSH(I64, I64)
+        case WAH_OP_I64_EXTEND32_S: POP_PUSH(I64, I64)
 
         case WAH_OP_I32_TRUNC_SAT_F32_S: POP_PUSH(F32, I32)
         case WAH_OP_I32_TRUNC_SAT_F32_U: POP_PUSH(F32, I32)
@@ -3395,6 +3402,12 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
             case WAH_OP_I64_REINTERPRET_F64: REINTERPRET(f64, double, i64, int64_t)
             case WAH_OP_F32_REINTERPRET_I32: REINTERPRET(i32, int32_t, f32, float)
             case WAH_OP_F64_REINTERPRET_I64: REINTERPRET(i64, int64_t, f64, double)
+
+            case WAH_OP_I32_EXTEND8_S: { VSTACK_TOP.i32 = (int32_t)(int8_t)VSTACK_TOP.i32; break; }
+            case WAH_OP_I32_EXTEND16_S: { VSTACK_TOP.i32 = (int32_t)(int16_t)VSTACK_TOP.i32; break; }
+            case WAH_OP_I64_EXTEND8_S: { VSTACK_TOP.i64 = (int64_t)(int8_t)VSTACK_TOP.i64; break; }
+            case WAH_OP_I64_EXTEND16_S: { VSTACK_TOP.i64 = (int64_t)(int16_t)VSTACK_TOP.i64; break; }
+            case WAH_OP_I64_EXTEND32_S: { VSTACK_TOP.i64 = (int64_t)(int32_t)VSTACK_TOP.i64; break; }
 
             case WAH_OP_I32_TRUNC_SAT_F32_S: { VSTACK_TOP.i32 =          wah_trunc_sat_f32_to_i32(VSTACK_TOP.f32); break; }
             case WAH_OP_I32_TRUNC_SAT_F32_U: { VSTACK_TOP.i32 = (int32_t)wah_trunc_sat_f32_to_u32(VSTACK_TOP.f32); break; }
