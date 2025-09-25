@@ -271,6 +271,30 @@ const uint8_t v128_load64_lane_wasm[] = LOAD_LANE_TEST_WASM(0x57);
         0x0b, \
 }
 
+// Generic WASM template for ternary SIMD operations (pop 3 v128, push 1 v128)
+// (module
+//   (func (result v128)
+//     (v128.const ...)
+//     (v128.const ...)
+//     (v128.const ...)
+//     (subopcode)
+//   )
+// )
+#define TERNARY_OP_WASM(subopcode) { \
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, \
+    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b, \
+    0x03, 0x02, 0x01, 0x00, \
+    0x0a, 0x3d, 0x01, 0x3b, 0x00, \
+        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+        0xfd, (subopcode & 0x7f) | 0x80, subopcode >> 7, \
+        0x0b, \
+}
+
 // Helper to encode a 32-bit signed integer as LEB128. Returns number of bytes written.
 static size_t encode_s32_leb128(int32_t value, uint8_t* out) {
     size_t i = 0;
@@ -446,6 +470,55 @@ wah_error_t run_simd_binary_op_test(const char* test_name, const uint8_t* wasm_b
     return WAH_OK;
 }
 #define run_simd_binary_op_test(n,b,o1,o2,e) run_simd_binary_op_test(n,b,sizeof(b),o1,o2,e)
+
+wah_error_t run_simd_ternary_op_test(const char* test_name, const uint8_t* wasm_binary, size_t wasm_size, const wah_v128_t* operand1, const wah_v128_t* operand2, const wah_v128_t* operand3, const wah_v128_t* expected_val) {
+    wah_module_t module;
+    wah_exec_context_t ctx;
+    wah_error_t err = WAH_OK;
+
+    // Set the v128.const values in the WASM binary for the operands
+    uint8_t wasm_binary_copy[wasm_size];
+    memcpy(wasm_binary_copy, wasm_binary, wasm_size);
+    memcpy(wasm_binary_copy + 26, operand1, sizeof(wah_v128_t));
+    memcpy(wasm_binary_copy + 44, operand2, sizeof(wah_v128_t));
+    memcpy(wasm_binary_copy + 62, operand3, sizeof(wah_v128_t));
+
+    printf("\n--- Testing %s ---\n", test_name);
+    printf("Parsing module...\n");
+    err = wah_parse_module(wasm_binary_copy, wasm_size, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
+        return err;
+    }
+    printf("Module parsed successfully.\n");
+
+    err = wah_exec_context_create(&ctx, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
+        wah_free_module(&module);
+        return err;
+    }
+
+    uint32_t func_idx = 0;
+    wah_value_t result;
+
+    printf("Interpreting function %u...\n", func_idx);
+    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+        return err;
+    }
+    printf("Function interpreted successfully.\n");
+
+    err = compare_and_print_v128_result(test_name, &result.v128, (const wah_v128_t*)expected_val);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+    printf("%s test completed successfully.\n", test_name);
+    return WAH_OK;
+}
+#define run_simd_ternary_op_test(n,b,o1,o2,o3,e) run_simd_ternary_op_test(n,b,sizeof(b),o1,o2,o3,e)
 
 // Generic WASM template for unary SIMD operations (pop 1 v128, push 1 v128)
 // (module
@@ -875,6 +948,88 @@ void test_v128_not() {
     if (run_simd_unary_op_test("v128.not", v128_not_wasm, &operand, &expected) != WAH_OK) { exit(1); }
 }
 
+// Test cases for v128.bitselect
+const uint8_t v128_bitselect_wasm[] = TERNARY_OP_WASM(0x82);
+void test_v128_bitselect() {
+    wah_v128_t v1 = {{0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0}};
+    wah_v128_t v2 = {{0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F}};
+    wah_v128_t v3 = {{0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA}};
+    wah_v128_t expected = {{0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A}};
+    if (run_simd_ternary_op_test("v128.bitselect", v128_bitselect_wasm, &v1, &v2, &v3, &expected) != WAH_OK) { exit(1); }
+}
+
+wah_error_t run_simd_any_true_test(const char* test_name, const uint8_t* wasm_binary, size_t wasm_size, const wah_v128_t* operand, int32_t expected_val) {
+    wah_module_t module;
+    wah_exec_context_t ctx;
+    wah_error_t err = WAH_OK;
+
+    // Set the v128.const value in the WASM binary for the operand
+    uint8_t wasm_binary_copy[wasm_size];
+    memcpy(wasm_binary_copy, wasm_binary, wasm_size);
+    memcpy(wasm_binary_copy + 26, operand, sizeof(wah_v128_t));
+
+    printf("\n--- Testing %s ---\n", test_name);
+    printf("Parsing module...\n");
+    err = wah_parse_module(wasm_binary_copy, wasm_size, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
+        return err;
+    }
+    printf("Module parsed successfully.\n");
+
+    err = wah_exec_context_create(&ctx, &module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
+        wah_free_module(&module);
+        return err;
+    }
+
+    uint32_t func_idx = 0;
+    wah_value_t result;
+
+    printf("Interpreting function %u...\n", func_idx);
+    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+        return err;
+    }
+    printf("Function interpreted successfully.\n");
+
+    if (result.i32 == expected_val) {
+        printf("Result scalar matches expected value for %s.\n", test_name);
+    } else {
+        fprintf(stderr, "Result scalar does NOT match expected value for %s.\n", test_name);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+        return WAH_ERROR_VALIDATION_FAILED; // Indicate test failure
+    }
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+    printf("%s test completed successfully.\n", test_name);
+    return WAH_OK;
+}
+#define run_simd_any_true_test(n,b,o,e) run_simd_any_true_test(n,b,sizeof(b),o,e)
+
+const uint8_t v128_any_true_wasm[] = {
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f,
+    0x03, 0x02, 0x01, 0x00,
+    0x0a, 0x19, 0x01, 0x17, 0x00,
+        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xfd, 0x83, 0x01,
+        0x0b,
+};
+void test_v128_any_true() {
+    wah_v128_t operand_true = {{0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+    wah_v128_t operand_false = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+    if (run_simd_any_true_test("v128.any_true (true)", v128_any_true_wasm, &operand_true, 1) != WAH_OK) { exit(1); }
+    if (run_simd_any_true_test("v128.any_true (false)", v128_any_true_wasm, &operand_false, 0) != WAH_OK) { exit(1); }
+}
+
 // Test cases for i8x16.add
 const uint8_t i8x16_add_wasm[] = BINARY_OP_WASM(0x6e);
 void test_i8x16_add() {
@@ -1250,49 +1405,49 @@ void test_i32x4_ge_u() {
 }
 
 // Test cases for i64x2.eq
-const uint8_t i64x2_eq_wasm[] = BINARY_OP_WASM(0x41);
+const uint8_t i64x2_eq_wasm[] = BINARY_OP_WASM(0xD6);
 void test_i64x2_eq() {
     wah_v128_t operand1 = { .i64 = {1, 2} }, operand2 = { .i64 = {1, 0} }, expected = { .u64 = {~0ULL, 0} };
     if (run_simd_binary_op_test("i64x2.eq", i64x2_eq_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
 }
 
 // Test cases for i64x2.ne
-const uint8_t i64x2_ne_wasm[] = BINARY_OP_WASM(0x42);
+const uint8_t i64x2_ne_wasm[] = BINARY_OP_WASM(0xD7);
 void test_i64x2_ne() {
     wah_v128_t operand1 = { .i64 = {1, 2} }, operand2 = { .i64 = {1, 0} }, expected = { .u64 = {0, ~0ULL} };
     if (run_simd_binary_op_test("i64x2.ne", i64x2_ne_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
 }
 
 // Test cases for i64x2.lt_s
-const uint8_t i64x2_lt_s_wasm[] = BINARY_OP_WASM(0x43);
+const uint8_t i64x2_lt_s_wasm[] = BINARY_OP_WASM(0xD8);
 void test_i64x2_lt_s() {
     wah_v128_t operand1 = { .i64 = {1, 2} }, operand2 = { .i64 = {2, 1} }, expected = { .u64 = {~0ULL, 0} }; // 1<2, 2<1(F)
     if (run_simd_binary_op_test("i64x2.lt_s", i64x2_lt_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
 }
 
 // Test cases for i64x2.gt_s
-const uint8_t i64x2_gt_s_wasm[] = BINARY_OP_WASM(0x44);
+const uint8_t i64x2_gt_s_wasm[] = BINARY_OP_WASM(0xD9);
 void test_i64x2_gt_s() {
     wah_v128_t operand1 = { .i64 = {2, 1} }, operand2 = { .i64 = {1, 2} }, expected = { .u64 = {~0ULL, 0} }; // 2>1, 1>2(F)
     if (run_simd_binary_op_test("i64x2.gt_s", i64x2_gt_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
 }
 
 // Test cases for i64x2.le_s
-const uint8_t i64x2_le_s_wasm[] = BINARY_OP_WASM(0x45);
+const uint8_t i64x2_le_s_wasm[] = BINARY_OP_WASM(0xDA);
 void test_i64x2_le_s() {
     wah_v128_t operand1 = { .i64 = {1, 2} }, operand2 = { .i64 = {1, 2} }, expected = { .u64 = {~0ULL, ~0ULL} }; // 1<=1, 2<=2
     if (run_simd_binary_op_test("i64x2.le_s", i64x2_le_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
 }
 
 // Test cases for i64x2.ge_s
-const uint8_t i64x2_ge_s_wasm[] = BINARY_OP_WASM(0x46);
+const uint8_t i64x2_ge_s_wasm[] = BINARY_OP_WASM(0xDB);
 void test_i64x2_ge_s() {
     wah_v128_t operand1 = { .i64 = {1, 2} }, operand2 = { .i64 = {1, 2} }, expected = { .u64 = {~0ULL, ~0ULL} }; // 1>=1, 2>=2
     if (run_simd_binary_op_test("i64x2.ge_s", i64x2_ge_s_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
 }
 
 // Test cases for f32x4.eq
-const uint8_t f32x4_eq_wasm[] = BINARY_OP_WASM(0x47);
+const uint8_t f32x4_eq_wasm[] = BINARY_OP_WASM(0x41);
 void test_f32x4_eq() {
     wah_v128_t operand1 = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} }, operand2 = { .f32 = {1.0f, 0.0f, 3.0f, 0.0f} };
     wah_v128_t expected = { .u32 = {~0U, 0, ~0U, 0} };
@@ -1300,7 +1455,7 @@ void test_f32x4_eq() {
 }
 
 // Test cases for f32x4.ne
-const uint8_t f32x4_ne_wasm[] = BINARY_OP_WASM(0x48);
+const uint8_t f32x4_ne_wasm[] = BINARY_OP_WASM(0x42);
 void test_f32x4_ne() {
     wah_v128_t operand1 = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} }, operand2 = { .f32 = {1.0f, 0.0f, 3.0f, 0.0f} };
     wah_v128_t expected = { .u32 = {0, ~0U, 0, ~0U} };
@@ -1308,7 +1463,7 @@ void test_f32x4_ne() {
 }
 
 // Test cases for f32x4.lt
-const uint8_t f32x4_lt_wasm[] = BINARY_OP_WASM(0x49);
+const uint8_t f32x4_lt_wasm[] = BINARY_OP_WASM(0x43);
 void test_f32x4_lt() {
     wah_v128_t operand1 = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} }, operand2 = { .f32 = {2.0f, 1.0f, 3.0f, 5.0f} };
     wah_v128_t expected = { .u32 = {~0U, 0, 0, ~0U} }; // 1<2, 2<1(F), 3<3(F), 4<5
@@ -1316,7 +1471,7 @@ void test_f32x4_lt() {
 }
 
 // Test cases for f32x4.gt
-const uint8_t f32x4_gt_wasm[] = BINARY_OP_WASM(0x4A);
+const uint8_t f32x4_gt_wasm[] = BINARY_OP_WASM(0x44);
 void test_f32x4_gt() {
     wah_v128_t operand1 = { .f32 = {2.0f, 1.0f, 3.0f, 5.0f} }, operand2 = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} };
     wah_v128_t expected = { .u32 = {~0U, 0, 0, ~0U} }; // 2>1, 1>2(F), 3>3(F), 5>4
@@ -1324,7 +1479,7 @@ void test_f32x4_gt() {
 }
 
 // Test cases for f32x4.le
-const uint8_t f32x4_le_wasm[] = BINARY_OP_WASM(0x4B);
+const uint8_t f32x4_le_wasm[] = BINARY_OP_WASM(0x45);
 void test_f32x4_le() {
     wah_v128_t operand1 = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} }, operand2 = { .f32 = {1.0f, 1.0f, 3.0f, 5.0f} };
     wah_v128_t expected = { .u32 = {~0U, 0, ~0U, ~0U} }; // 1<=1, 2<=1(F), 3<=3, 4<=5
@@ -1332,7 +1487,7 @@ void test_f32x4_le() {
 }
 
 // Test cases for f32x4.ge
-const uint8_t f32x4_ge_wasm[] = BINARY_OP_WASM(0x4C);
+const uint8_t f32x4_ge_wasm[] = BINARY_OP_WASM(0x46);
 void test_f32x4_ge() {
     wah_v128_t operand1 = { .f32 = {1.0f, 2.0f, 3.0f, 5.0f} }, operand2 = { .f32 = {1.0f, 1.0f, 3.0f, 4.0f} };
     wah_v128_t expected = { .u32 = {~0U, ~0U, ~0U, ~0U} }; // 1>=1, 2>=1, 3>=3, 5>=4
@@ -1340,42 +1495,42 @@ void test_f32x4_ge() {
 }
 
 // Test cases for f64x2.eq
-const uint8_t f64x2_eq_wasm[] = BINARY_OP_WASM(0x58);
+const uint8_t f64x2_eq_wasm[] = BINARY_OP_WASM(0x47);
 void test_f64x2_eq() {
     wah_v128_t operand1 = { .f64 = {1.0, 2.0} }, operand2 = { .f64 = {1.0, 0.0} }, expected = { .u64 = {~0ULL, 0} };
     if (run_simd_binary_op_test("f64x2.eq", f64x2_eq_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
 }
 
 // Test cases for f64x2.ne
-const uint8_t f64x2_ne_wasm[] = BINARY_OP_WASM(0x59);
+const uint8_t f64x2_ne_wasm[] = BINARY_OP_WASM(0x48);
 void test_f64x2_ne() {
     wah_v128_t operand1 = { .f64 = {1.0, 2.0} }, operand2 = { .f64 = {1.0, 0.0} }, expected = { .u64 = {0, ~0ULL} };
     if (run_simd_binary_op_test("f64x2.ne", f64x2_ne_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
 }
 
 // Test cases for f64x2.lt
-const uint8_t f64x2_lt_wasm[] = BINARY_OP_WASM(0x5A);
+const uint8_t f64x2_lt_wasm[] = BINARY_OP_WASM(0x49);
 void test_f64x2_lt() {
     wah_v128_t operand1 = { .f64 = {1.0, 2.0} }, operand2 = { .f64 = {2.0, 1.0} }, expected = { .u64 = {~0ULL, 0} }; // 1<2, 2<1(F)
     if (run_simd_binary_op_test("f64x2.lt", f64x2_lt_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
 }
 
 // Test cases for f64x2.gt
-const uint8_t f64x2_gt_wasm[] = BINARY_OP_WASM(0x5B);
+const uint8_t f64x2_gt_wasm[] = BINARY_OP_WASM(0x4A);
 void test_f64x2_gt() {
     wah_v128_t operand1 = { .f64 = {2.0, 1.0} }, operand2 = { .f64 = {1.0, 2.0} }, expected = { .u64 = {~0ULL, 0} }; // 2>1, 1>2(F)
     if (run_simd_binary_op_test("f64x2.gt", f64x2_gt_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
 }
 
 // Test cases for f64x2.le
-const uint8_t f64x2_le_wasm[] = BINARY_OP_WASM(0x5E);
+const uint8_t f64x2_le_wasm[] = BINARY_OP_WASM(0x4B);
 void test_f64x2_le() {
     wah_v128_t operand1 = { .f64 = {1.0, 2.0} }, operand2 = { .f64 = {1.0, 1.0} }, expected = { .u64 = {~0ULL, 0} }; // 1<=1, 2<=1(F)
     if (run_simd_binary_op_test("f64x2.le", f64x2_le_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
 }
 
 // Test cases for f64x2.ge
-const uint8_t f64x2_ge_wasm[] = BINARY_OP_WASM(0x5F);
+const uint8_t f64x2_ge_wasm[] = BINARY_OP_WASM(0x4C);
 void test_f64x2_ge() {
     wah_v128_t operand1 = { .f64 = {1.0, 2.0} }, operand2 = { .f64 = {1.0, 1.0} }, expected = { .u64 = {~0ULL, ~0ULL} }; // 1>=1, 2>=1
     if (run_simd_binary_op_test("f64x2.ge", f64x2_ge_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
@@ -1489,6 +1644,86 @@ void test_f64x2_splat() {
     if (run_simd_splat_test("f64x2.splat", f64x2_splat_wasm, &operand_scalar, WAH_TYPE_F64, &expected) != WAH_OK) { exit(1); }
 }
 
+// Test cases for i32x4.trunc_sat_f32x4_s
+const uint8_t i32x4_trunc_sat_f32x4_s_wasm[] = UNARY_OP_WASM(0xF8);
+void test_i32x4_trunc_sat_f32x4_s() {
+    wah_v128_t operand = { .f32 = {1.5f, -2.5f, 2147483647.0f, -2147483648.0f} };
+    wah_v128_t expected = { .i32 = {1, -2, 2147483647, -2147483648} };
+    if (run_simd_unary_op_test("i32x4.trunc_sat_f32x4_s", i32x4_trunc_sat_f32x4_s_wasm, &operand, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.trunc_sat_f32x4_u
+const uint8_t i32x4_trunc_sat_f32x4_u_wasm[] = UNARY_OP_WASM(0xF9);
+void test_i32x4_trunc_sat_f32x4_u() {
+    wah_v128_t operand = { .f32 = {1.5f, -2.5f, 4294967295.0f, 0.0f} };
+    wah_v128_t expected = { .u32 = {1, 0, 4294967295U, 0} };
+    if (run_simd_unary_op_test("i32x4.trunc_sat_f32x4_u", i32x4_trunc_sat_f32x4_u_wasm, &operand, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f32x4.convert_i32x4_s
+const uint8_t f32x4_convert_i32x4_s_wasm[] = UNARY_OP_WASM(0xFA);
+void test_f32x4_convert_i32x4_s() {
+    wah_v128_t operand = { .i32 = {1, -2, 3, -4} };
+    wah_v128_t expected = { .f32 = {1.0f, -2.0f, 3.0f, -4.0f} };
+    if (run_simd_unary_op_test("f32x4.convert_i32x4_s", f32x4_convert_i32x4_s_wasm, &operand, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f32x4.convert_i32x4_u
+const uint8_t f32x4_convert_i32x4_u_wasm[] = UNARY_OP_WASM(0xFB);
+void test_f32x4_convert_i32x4_u() {
+    wah_v128_t operand = { .u32 = {1, 2, 3, 4} };
+    wah_v128_t expected = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} };
+    if (run_simd_unary_op_test("f32x4.convert_i32x4_u", f32x4_convert_i32x4_u_wasm, &operand, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.trunc_sat_f64x2_s_zero
+const uint8_t i32x4_trunc_sat_f64x2_s_zero_wasm[] = UNARY_OP_WASM(0xFC);
+void test_i32x4_trunc_sat_f64x2_s_zero() {
+    wah_v128_t operand = { .f64 = {1.5, -2.5} };
+    wah_v128_t expected = { .i32 = {1, -2, 0, 0} };
+    if (run_simd_unary_op_test("i32x4.trunc_sat_f64x2_s_zero", i32x4_trunc_sat_f64x2_s_zero_wasm, &operand, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for i32x4.trunc_sat_f64x2_u_zero
+const uint8_t i32x4_trunc_sat_f64x2_u_zero_wasm[] = UNARY_OP_WASM(0xFD);
+void test_i32x4_trunc_sat_f64x2_u_zero() {
+    wah_v128_t operand = { .f64 = {1.5, -2.5} };
+    wah_v128_t expected = { .u32 = {1, 0, 0, 0} };
+    if (run_simd_unary_op_test("i32x4.trunc_sat_f64x2_u_zero", i32x4_trunc_sat_f64x2_u_zero_wasm, &operand, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f64x2.convert_low_i32x4_s
+const uint8_t f64x2_convert_low_i32x4_s_wasm[] = UNARY_OP_WASM(0xFE);
+void test_f64x2_convert_low_i32x4_s() {
+    wah_v128_t operand = { .i32 = {1, -2, 3, -4} };
+    wah_v128_t expected = { .f64 = {1.0, -2.0} };
+    if (run_simd_unary_op_test("f64x2.convert_low_i32x4_s", f64x2_convert_low_i32x4_s_wasm, &operand, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f64x2.convert_low_i32x4_u
+const uint8_t f64x2_convert_low_i32x4_u_wasm[] = UNARY_OP_WASM(0xFF);
+void test_f64x2_convert_low_i32x4_u() {
+    wah_v128_t operand = { .u32 = {1, 2, 3, 4} };
+    wah_v128_t expected = { .f64 = {1.0, 2.0} };
+    if (run_simd_unary_op_test("f64x2.convert_low_i32x4_u", f64x2_convert_low_i32x4_u_wasm, &operand, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f32x4.demote_f64x2_zero
+const uint8_t f32x4_demote_f64x2_zero_wasm[] = UNARY_OP_WASM(0x5E);
+void test_f32x4_demote_f64x2_zero() {
+    wah_v128_t operand = { .f64 = {1.5, 2.5} };
+    wah_v128_t expected = { .f32 = {1.5f, 2.5f, 0.0f, 0.0f} };
+    if (run_simd_unary_op_test("f32x4.demote_f64x2_zero", f32x4_demote_f64x2_zero_wasm, &operand, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f64x2.promote_low_f32x4
+const uint8_t f64x2_promote_low_f32x4_wasm[] = UNARY_OP_WASM(0x5F);
+void test_f64x2_promote_low_f32x4() {
+    wah_v128_t operand = { .f32 = {1.5f, 2.5f, 3.5f, 4.5f} };
+    wah_v128_t expected = { .f64 = {1.5, 2.5} };
+    if (run_simd_unary_op_test("f64x2.promote_low_f32x4", f64x2_promote_low_f32x4_wasm, &operand, &expected) != WAH_OK) { exit(1); }
+}
+
 int main() {
     test_v128_const();
     test_v128_load_store();
@@ -1566,6 +1801,19 @@ int main() {
     test_i64x2_splat();
     test_f32x4_splat();
     test_f64x2_splat();
+
+    test_v128_bitselect();
+    test_v128_any_true();
+    test_i32x4_trunc_sat_f32x4_s();
+    test_i32x4_trunc_sat_f32x4_u();
+    test_f32x4_convert_i32x4_s();
+    test_f32x4_convert_i32x4_u();
+    test_i32x4_trunc_sat_f64x2_s_zero();
+    test_i32x4_trunc_sat_f64x2_u_zero();
+    test_f64x2_convert_low_i32x4_s();
+    test_f64x2_convert_low_i32x4_u();
+    test_f32x4_demote_f64x2_zero();
+    test_f64x2_promote_low_f32x4();
 
     return 0;
 }
