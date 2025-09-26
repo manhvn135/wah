@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <inttypes.h>
 
 #define FLOAT_TOLERANCE 1e-6
 
@@ -62,8 +63,8 @@ int run_test_##T(const char* test_name, const uint8_t* wasm_bytecode, size_t byt
      (isinf(result_val) && isinf(expected_val) && (signbit(result_val) == signbit(expected_val))) || \
      (fabs(result_val - expected_val) <= FLOAT_TOLERANCE))
 
-DEFINE_RUN_TEST(i32, int32_t, "%d", result.i32 == expected_result)
-DEFINE_RUN_TEST(i64, int64_t, "%lld", result.i64 == expected_result)
+DEFINE_RUN_TEST(i32, int32_t, "%" PRId32, result.i32 == expected_result)
+DEFINE_RUN_TEST(i64, int64_t, "%" PRId64, result.i64 == expected_result)
 DEFINE_RUN_TEST(f32, float, "%f", FLOAT_COMPARE(result.f32, expected_result, float))
 DEFINE_RUN_TEST(f64, double, "%f", FLOAT_COMPARE(result.f64, expected_result, double))
 

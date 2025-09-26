@@ -8,8 +8,16 @@ wah_test_globals
 wah_test_memory
 wah_test_ops
 wah_test_overflow
+wah_test_parse
 wah_test_simd
 wah_test_table
 wah_test_traps
 wah_test_types
+wah_fuzz_afl
+fuzz
+*.gcda
+*.gcno
+cov
+coverage.info
+coverage_report
 .claude

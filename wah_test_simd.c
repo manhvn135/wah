@@ -429,7 +429,7 @@ wah_error_t run_v128_load_test(const char* test_name, const uint8_t* wasm_binary
     if (initial_memory && initial_memory_size > 0) {
         if (initial_memory_size > ctx.memory_size) {
             fprintf(stderr, "Error: Initial memory size (%zu) exceeds module memory size (%zu) for %s\n",
-                    initial_memory_size, ctx.memory_size, test_name);
+                    initial_memory_size, (size_t)ctx.memory_size, test_name);
             err = WAH_ERROR_MISUSE;
         } else {
             memcpy(ctx.memory_base, initial_memory, initial_memory_size);

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h> // For isnan, though we'll use bit patterns for comparison
 #include <stdlib.h> // For malloc, free
+#include <inttypes.h>
 
 // Helper to convert float to uint32_t bit pattern
 static uint32_t float_to_bits(float f) {
@@ -333,7 +334,7 @@ static wah_error_t test_f64_add_nan_canonicalization() {
     } else {
         printf("f64.add test FAILED: Adding non-canonical NaNs did NOT result in canonical NaN.\n");
         printf("  Expected canonical bits: 0x%llX\n", TEST_WASM_F64_CANONICAL_NAN_BITS);
-        printf("  Actual result bits:    0x%llX\n", result_i64_bits);
+        printf("  Actual result bits:    0x%" PRIx64 "\n", result_i64_bits);
         err = WAH_ERROR_VALIDATION_FAILED;
     }
 
@@ -471,7 +472,7 @@ static wah_error_t test_f64_min_nan_canonicalization() {
     } else {
         printf("f64.min test FAILED: Min of non-canonical NaNs did NOT result in canonical NaN.\n");
         printf("  Expected canonical bits: 0x%llX\n", TEST_WASM_F64_CANONICAL_NAN_BITS);
-        printf("  Actual result bits:    0x%llX\n", result_i64_bits);
+        printf("  Actual result bits:    0x%" PRIx64 "\n", result_i64_bits);
         err = WAH_ERROR_VALIDATION_FAILED;
     }
 
@@ -517,7 +518,7 @@ static wah_error_t test_f64_promote_f32_nan_canonicalization() {
     if (double_to_bits(result.f64) == TEST_WASM_F64_CANONICAL_NAN_BITS) {
         printf("  PASS: f64.promote_f32 produced canonical NaN.\n");
     } else {
-        printf("  FAIL: f64.promote_f32 did not produce canonical NaN. Expected 0x%llx, Got 0x%llx\n",
+        printf("  FAIL: f64.promote_f32 did not produce canonical NaN. Expected 0x%llx, Got 0x%" PRIx64 "\n",
                TEST_WASM_F64_CANONICAL_NAN_BITS, double_to_bits(result.f64));
         err = WAH_ERROR_VALIDATION_FAILED;
     }

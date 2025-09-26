@@ -2325,7 +2325,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
 
 static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     wah_error_t err = WAH_OK;
-    uint32_t count;
+    uint32_t count = 0;
     WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &count), cleanup);
 
     module->export_count = count;
