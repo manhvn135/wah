@@ -4,6 +4,160 @@
 #include <string.h> // For memcmp
 #include "wah.h"
 
+// Helper to encode a 32-bit signed integer as LEB128. Returns number of bytes written.
+static size_t encode_s32_leb128(int32_t value, uint8_t* out) {
+    size_t i = 0;
+    while (true) {
+        uint8_t byte = value & 0x7f;
+        value >>= 7;
+        if ((value == 0 && (byte & 0x40) == 0) || (value == -1 && (byte & 0x40) != 0)) {
+            out[i++] = byte;
+            break;
+        }
+        out[i++] = byte | 0x80;
+    }
+    return i;
+}
+
+// Helper to encode a 64-bit signed integer as LEB128. Returns number of bytes written.
+static size_t encode_s64_leb128(int64_t value, uint8_t* out) {
+    size_t i = 0;
+    while (true) {
+        uint8_t byte = value & 0x7f;
+        value >>= 7;
+        if ((value == 0 && (byte & 0x40) == 0) || (value == -1 && (byte & 0x40) != 0)) {
+            out[i++] = byte;
+            break;
+        }
+        out[i++] = byte | 0x80;
+    }
+    return i;
+}
+
+// Helper to patch a scalar constant (xxx.const) into a WASM binary.
+// wasm_binary_ptr points to the location where the opcode (0x41, 0x42, 0x43, 0x44) should be written.
+// It assumes 10 bytes are reserved for the opcode + value (1 byte for opcode, 9 for value).
+static wah_error_t patch_scalar_const(uint8_t* wasm_binary_ptr, const wah_value_t* operand_scalar, wah_type_t scalar_type) {
+    // Clear the 10-byte value placeholder with NOPs (0x01)
+    memset(wasm_binary_ptr, 0x01, 10);
+
+    switch (scalar_type) {
+        case WAH_TYPE_I32:
+            wasm_binary_ptr[0] = 0x41; // i32.const
+            encode_s32_leb128(operand_scalar->i32, wasm_binary_ptr + 1);
+            break;
+        case WAH_TYPE_I64:
+            wasm_binary_ptr[0] = 0x42; // i64.const
+            encode_s64_leb128(operand_scalar->i64, wasm_binary_ptr + 1);
+            break;
+        case WAH_TYPE_F32:
+            wasm_binary_ptr[0] = 0x43; // f32.const
+            memcpy(wasm_binary_ptr + 1, &operand_scalar->f32, 4);
+            break;
+        case WAH_TYPE_F64:
+            wasm_binary_ptr[0] = 0x44; // f64.const
+            memcpy(wasm_binary_ptr + 1, &operand_scalar->f64, 8);
+            break;
+        default:
+            fprintf(stderr, "Unsupported scalar type for patch_scalar_const: %d\n", scalar_type);
+            return WAH_ERROR_MISUSE;
+    }
+    return WAH_OK;
+}
+
+// Helper to compare v128 results and print byte-by-byte if they don't match.
+static wah_error_t compare_and_print_v128_result(const char* test_name, const wah_v128_t* actual, const wah_v128_t* expected) {
+    if (memcmp(actual, expected, sizeof(wah_v128_t)) == 0) {
+        printf("Result v128 matches expected value for %s.\n", test_name);
+        return WAH_OK;
+    } else {
+        fprintf(stderr, "Result v128 does NOT match expected value for %s.\n", test_name);
+        fprintf(stderr, "Expected: ");
+        for (int i = 0; i < 16; ++i) {
+            fprintf(stderr, "%02x ", expected->u8[i]);
+        }
+        fprintf(stderr, "\nActual:   ");
+        for (int i = 0; i < 16; ++i) {
+            fprintf(stderr, "%02x ", actual->u8[i]);
+        }
+        fprintf(stderr, "\n");
+        return WAH_ERROR_VALIDATION_FAILED; // Indicate test failure
+    }
+}
+
+// Placeholders for v128 arguments (16 bytes)
+#define V128_ARG1_PLACEHOLDER '(', 'v', '1', '2', '8', '_', 'a', 'r', 'g', 'u', 'm', 'e', 'n', 't', '1', ')'
+#define V128_ARG2_PLACEHOLDER '(', 'v', '1', '2', '8', '_', 'a', 'r', 'g', 'u', 'm', 'e', 'n', 't', '2', ')'
+#define V128_ARG3_PLACEHOLDER '(', 'v', '1', '2', '8', '_', 'a', 'r', 'g', 'u', 'm', 'e', 'n', 't', '3', ')'
+
+// Placeholder for scalar operand (10 bytes; 1 byte opcode + up to 9 bytes LEB128)
+#define SCALAR_OP_PLACEHOLDER '(', 's', 'c', 'a', 'l', 'a', 'r', 'o', 'p', ')'
+
+static const uint8_t v128_arg1_placeholder[] = {V128_ARG1_PLACEHOLDER};
+static const uint8_t v128_arg2_placeholder[] = {V128_ARG2_PLACEHOLDER};
+static const uint8_t v128_arg3_placeholder[] = {V128_ARG3_PLACEHOLDER};
+static const uint8_t scalar_op_placeholder[] = {SCALAR_OP_PLACEHOLDER};
+
+// Helper to find the offset of a byte sequence (placeholder) in a WASM binary.
+// Returns a pointer to the found location on success, or NULL if the placeholder is not found.
+static uint8_t* find_placeholder_location(uint8_t* wasm_binary, size_t wasm_size,
+                                          const uint8_t* placeholder, size_t placeholder_size) {
+    for (size_t i = 0; i <= wasm_size - placeholder_size; ++i) {
+        if (memcmp(wasm_binary + i, placeholder, placeholder_size) == 0) {
+            return wasm_binary + i;
+        }
+    }
+    return NULL; // Placeholder not found
+}
+
+// Helper to set up module and execution context
+static wah_error_t wah_test_setup_context(
+    const char* test_name,
+    const uint8_t* wasm_binary,
+    size_t wasm_size,
+    wah_module_t* out_module,
+    wah_exec_context_t* out_ctx
+) {
+    wah_error_t err;
+
+    printf("\n--- Testing %s ---\n", test_name);
+    printf("Parsing module...\n");
+    err = wah_parse_module(wasm_binary, wasm_size, out_module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
+        return err;
+    }
+    printf("Module parsed successfully.\n");
+
+    err = wah_exec_context_create(out_ctx, out_module);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
+        wah_free_module(out_module);
+        return err;
+    }
+    return WAH_OK;
+}
+
+// Helper to execute a WASM function and return its result
+static wah_error_t wah_test_execute_function(
+    const char* test_name,
+    wah_exec_context_t* ctx,
+    wah_module_t* module,
+    wah_value_t* out_result
+) {
+    wah_error_t err;
+    uint32_t func_idx = 0; // Assuming the test function is always at index 0
+
+    printf("Interpreting function %u...\n", func_idx);
+    err = wah_call(ctx, module, func_idx, NULL, 0, out_result);
+    if (err != WAH_OK) {
+        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
+        return err;
+    }
+    printf("Function interpreted successfully.\n");
+    return WAH_OK;
+}
+
 // A simple WebAssembly binary for:
 // (module
 //   (func (result v128)
@@ -97,36 +251,22 @@ void test_v128_load_store() {
     wah_module_t module;
     wah_exec_context_t ctx;
     wah_error_t err;
+    const char* test_name = "v128.load and v128.store";
 
-    printf("\n--- Testing v128.load and v128.store ---\n");
-    printf("Parsing v128_load_store_wasm module...\n");
-    err = wah_parse_module((const uint8_t *)v128_load_store_wasm, sizeof(v128_load_store_wasm), &module);
+    err = wah_test_setup_context(test_name, v128_load_store_wasm, sizeof(v128_load_store_wasm), &module, &ctx);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing v128_load_store_wasm module: %s\n", wah_strerror(err));
-        exit(1);
-    }
-    printf("Module parsed successfully.\n");
-
-    err = wah_exec_context_create(&ctx, &module);
-    if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context: %s\n", wah_strerror(err));
-        wah_free_module(&module);
         exit(1);
     }
 
-    uint32_t func_idx = 0;
     wah_value_t result;
     uint8_t expected_v128_val[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00};
 
-    printf("Interpreting function %u (v128.load/store)...\n", func_idx);
-    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    err = wah_test_execute_function(test_name, &ctx, &module, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         exit(1);
     }
-    printf("Function interpreted successfully.\n");
 
     if (memcmp(&result.v128, expected_v128_val, sizeof(wah_v128_t)) == 0) {
         printf("Result v128 matches expected value.\n");
@@ -148,43 +288,29 @@ void test_v128_load_store() {
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
-    printf("v128.load/store test completed successfully.\n");
+    printf("%s test completed successfully.\n", test_name);
 }
 
 void test_v128_const() {
     wah_module_t module;
     wah_exec_context_t ctx;
     wah_error_t err;
+    const char* test_name = "v128.const";
 
-    printf("--- Testing v128.const ---\n");
-    printf("Parsing v128_const_wasm module...\n");
-    err = wah_parse_module((const uint8_t *)v128_const_wasm, sizeof(v128_const_wasm), &module);
+    err = wah_test_setup_context(test_name, v128_const_wasm, sizeof(v128_const_wasm), &module, &ctx);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing v128_const_wasm module: %s\n", wah_strerror(err));
-        exit(1);
-    }
-    printf("Module parsed successfully.\n");
-
-    err = wah_exec_context_create(&ctx, &module);
-    if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context: %s\n", wah_strerror(err));
-        wah_free_module(&module);
         exit(1);
     }
 
-    uint32_t func_idx = 0;
     wah_value_t result;
     uint8_t expected_v128_val[] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10};
 
-    printf("Interpreting function %u (v128.const)...\n", func_idx);
-    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    err = wah_test_execute_function(test_name, &ctx, &module, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         exit(1);
     }
-    printf("Function interpreted successfully.\n");
 
     if (memcmp(&result.v128, expected_v128_val, sizeof(wah_v128_t)) == 0) {
         printf("Result v128 matches expected value.\n");
@@ -206,7 +332,7 @@ void test_v128_const() {
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
-    printf("v128.const test completed successfully.\n");
+    printf("%s test completed successfully.\n", test_name);
 }
 
 #define LOAD_TEST_WASM(subopcode) { \
@@ -263,10 +389,8 @@ const uint8_t v128_load64_lane_wasm[] = LOAD_LANE_TEST_WASM(0x57);
     0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b, \
     0x03, 0x02, 0x01, 0x00, \
     0x0a, 0x2b, 0x01, 0x29, 0x00, \
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+        0xfd, 0x0c, V128_ARG1_PLACEHOLDER, \
+        0xfd, 0x0c, V128_ARG2_PLACEHOLDER, \
         0xfd, (subopcode & 0x7f) | 0x80, subopcode >> 7, \
         0x0b, \
 }
@@ -285,135 +409,45 @@ const uint8_t v128_load64_lane_wasm[] = LOAD_LANE_TEST_WASM(0x57);
     0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b, \
     0x03, 0x02, 0x01, 0x00, \
     0x0a, 0x3d, 0x01, 0x3b, 0x00, \
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+        0xfd, 0x0c, V128_ARG1_PLACEHOLDER, \
+        0xfd, 0x0c, V128_ARG2_PLACEHOLDER, \
+        0xfd, 0x0c, V128_ARG3_PLACEHOLDER, \
         0xfd, (subopcode & 0x7f) | 0x80, subopcode >> 7, \
         0x0b, \
-}
-
-// Helper to encode a 32-bit signed integer as LEB128. Returns number of bytes written.
-static size_t encode_s32_leb128(int32_t value, uint8_t* out) {
-    size_t i = 0;
-    while (true) {
-        uint8_t byte = value & 0x7f;
-        value >>= 7;
-        if ((value == 0 && (byte & 0x40) == 0) || (value == -1 && (byte & 0x40) != 0)) {
-            out[i++] = byte;
-            break;
-        }
-        out[i++] = byte | 0x80;
-    }
-    return i;
-}
-
-// Helper to encode a 64-bit signed integer as LEB128. Returns number of bytes written.
-static size_t encode_s64_leb128(int64_t value, uint8_t* out) {
-    size_t i = 0;
-    while (true) {
-        uint8_t byte = value & 0x7f;
-        value >>= 7;
-        if ((value == 0 && (byte & 0x40) == 0) || (value == -1 && (byte & 0x40) != 0)) {
-            out[i++] = byte;
-            break;
-        }
-        out[i++] = byte | 0x80;
-    }
-    return i;
-}
-
-// Helper to patch a scalar constant (xxx.const) into a WASM binary.
-// wasm_binary_ptr points to the location where the opcode (0x41, 0x42, 0x43, 0x44) should be written.
-// It assumes 10 bytes are reserved for the opcode + value (1 byte for opcode, 9 for value).
-static wah_error_t patch_scalar_const(uint8_t* wasm_binary_ptr, const wah_value_t* operand_scalar, wah_type_t scalar_type) {
-    // Clear the 9-byte value placeholder with NOPs (0x01)
-    memset(wasm_binary_ptr + 1, 0x01, 9);
-
-    switch (scalar_type) {
-        case WAH_TYPE_I32:
-            wasm_binary_ptr[0] = 0x41; // i32.const
-            encode_s32_leb128(operand_scalar->i32, wasm_binary_ptr + 1);
-            break;
-        case WAH_TYPE_I64:
-            wasm_binary_ptr[0] = 0x42; // i64.const
-            encode_s64_leb128(operand_scalar->i64, wasm_binary_ptr + 1);
-            break;
-        case WAH_TYPE_F32:
-            wasm_binary_ptr[0] = 0x43; // f32.const
-            memcpy(wasm_binary_ptr + 1, &operand_scalar->f32, 4);
-            break;
-        case WAH_TYPE_F64:
-            wasm_binary_ptr[0] = 0x44; // f64.const
-            memcpy(wasm_binary_ptr + 1, &operand_scalar->f64, 8);
-            break;
-        default:
-            fprintf(stderr, "Unsupported scalar type for patch_scalar_const: %d\n", scalar_type);
-            return WAH_ERROR_MISUSE;
-    }
-    return WAH_OK;
-}
-
-// Helper to compare v128 results and print byte-by-byte if they don't match.
-static wah_error_t compare_and_print_v128_result(const char* test_name, const wah_v128_t* actual, const wah_v128_t* expected) {
-    if (memcmp(actual, expected, sizeof(wah_v128_t)) == 0) {
-        printf("Result v128 matches expected value for %s.\n", test_name);
-        return WAH_OK;
-    } else {
-        fprintf(stderr, "Result v128 does NOT match expected value for %s.\n", test_name);
-        fprintf(stderr, "Expected: ");
-        for (int i = 0; i < 16; ++i) {
-            fprintf(stderr, "%02x ", expected->u8[i]);
-        }
-        fprintf(stderr, "\nActual:   ");
-        for (int i = 0; i < 16; ++i) {
-            fprintf(stderr, "%02x ", actual->u8[i]);
-        }
-        fprintf(stderr, "\n");
-        return WAH_ERROR_VALIDATION_FAILED; // Indicate test failure
-    }
 }
 
 wah_error_t run_v128_load_test(const char* test_name, const uint8_t* wasm_binary, size_t wasm_size, const uint8_t* expected_val, const uint8_t* initial_memory, size_t initial_memory_size) {
     wah_module_t module;
     wah_exec_context_t ctx;
-    wah_error_t err = WAH_OK;
+    wah_error_t err;
 
-    printf("\n--- Testing %s ---\n", test_name);
-    printf("Parsing module...\n");
-    err = wah_parse_module(wasm_binary, wasm_size, &module);
+    err = wah_test_setup_context(test_name, wasm_binary, wasm_size, &module, &ctx);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
-        return err;
-    }
-    printf("Module parsed successfully.\n");
-
-    err = wah_exec_context_create(&ctx, &module);
-    if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
-        wah_free_module(&module);
         return err;
     }
 
     if (initial_memory && initial_memory_size > 0) {
-        WAH_ENSURE(initial_memory_size <= ctx.memory_size, WAH_ERROR_MISUSE);
-        memcpy(ctx.memory_base, initial_memory, initial_memory_size);
+        if (initial_memory_size > ctx.memory_size) {
+            fprintf(stderr, "Error: Initial memory size (%zu) exceeds module memory size (%zu) for %s\n",
+                    initial_memory_size, ctx.memory_size, test_name);
+            err = WAH_ERROR_MISUSE;
+        } else {
+            memcpy(ctx.memory_base, initial_memory, initial_memory_size);
+        }
+        if (err != WAH_OK) {
+            wah_exec_context_destroy(&ctx);
+            wah_free_module(&module);
+            return err;
+        }
     }
 
-    uint32_t func_idx = 0;
     wah_value_t result;
-
-    printf("Interpreting function %u...\n", func_idx);
-    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    err = wah_test_execute_function(test_name, &ctx, &module, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return err;
     }
-    printf("Function interpreted successfully.\n");
 
     err = compare_and_print_v128_result(test_name, &result.v128, (const wah_v128_t*)expected_val);
     wah_exec_context_destroy(&ctx);
@@ -426,97 +460,78 @@ wah_error_t run_v128_load_test(const char* test_name, const uint8_t* wasm_binary
 wah_error_t run_simd_binary_op_test(const char* test_name, const uint8_t* wasm_binary, size_t wasm_size, const wah_v128_t* operand1, const wah_v128_t* operand2, const wah_v128_t* expected_val) {
     wah_module_t module;
     wah_exec_context_t ctx;
-    wah_error_t err = WAH_OK;
+    wah_error_t err;
 
-    // Set the v128.const values in the WASM binary for the operands
     uint8_t wasm_binary_copy[wasm_size];
     memcpy(wasm_binary_copy, wasm_binary, wasm_size);
-    memcpy(wasm_binary_copy + 26, operand1, sizeof(wah_v128_t));
-    memcpy(wasm_binary_copy + 44, operand2, sizeof(wah_v128_t));
 
-    printf("\n--- Testing %s ---\n", test_name);
-    printf("Parsing module...\n");
-    err = wah_parse_module(wasm_binary_copy, wasm_size, &module);
-    if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
-        return err;
-    }
-    printf("Module parsed successfully.\n");
+    uint8_t* loc1 = find_placeholder_location(wasm_binary_copy, wasm_size, v128_arg1_placeholder, sizeof(v128_arg1_placeholder));
+    if (!loc1) { fprintf(stderr, "Error: V128_ARG1_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    memcpy(loc1, operand1, sizeof(wah_v128_t));
 
-    err = wah_exec_context_create(&ctx, &module);
+    uint8_t* loc2 = find_placeholder_location(wasm_binary_copy, wasm_size, v128_arg2_placeholder, sizeof(v128_arg2_placeholder));
+    if (!loc2) { fprintf(stderr, "Error: V128_ARG2_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    memcpy(loc2, operand2, sizeof(wah_v128_t));
+
+    err = wah_test_setup_context(test_name, wasm_binary_copy, wasm_size, &module, &ctx);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
-        wah_free_module(&module);
         return err;
     }
 
-    uint32_t func_idx = 0;
     wah_value_t result;
-
-    printf("Interpreting function %u...\n", func_idx);
-    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    err = wah_test_execute_function(test_name, &ctx, &module, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return err;
     }
-    printf("Function interpreted successfully.\n");
 
     err = compare_and_print_v128_result(test_name, &result.v128, (const wah_v128_t*)expected_val);
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
     printf("%s test completed successfully.\n", test_name);
-    return WAH_OK;
+    return err;
 }
 #define run_simd_binary_op_test(n,b,o1,o2,e) run_simd_binary_op_test(n,b,sizeof(b),o1,o2,e)
 
 wah_error_t run_simd_ternary_op_test(const char* test_name, const uint8_t* wasm_binary, size_t wasm_size, const wah_v128_t* operand1, const wah_v128_t* operand2, const wah_v128_t* operand3, const wah_v128_t* expected_val) {
     wah_module_t module;
     wah_exec_context_t ctx;
-    wah_error_t err = WAH_OK;
+    wah_error_t err;
 
-    // Set the v128.const values in the WASM binary for the operands
     uint8_t wasm_binary_copy[wasm_size];
     memcpy(wasm_binary_copy, wasm_binary, wasm_size);
-    memcpy(wasm_binary_copy + 26, operand1, sizeof(wah_v128_t));
-    memcpy(wasm_binary_copy + 44, operand2, sizeof(wah_v128_t));
-    memcpy(wasm_binary_copy + 62, operand3, sizeof(wah_v128_t));
 
-    printf("\n--- Testing %s ---\n", test_name);
-    printf("Parsing module...\n");
-    err = wah_parse_module(wasm_binary_copy, wasm_size, &module);
+    uint8_t* loc1 = find_placeholder_location(wasm_binary_copy, wasm_size, v128_arg1_placeholder, sizeof(v128_arg1_placeholder));
+    if (!loc1) { fprintf(stderr, "Error: V128_ARG1_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    memcpy(loc1, operand1, sizeof(wah_v128_t));
+
+    uint8_t* loc2 = find_placeholder_location(wasm_binary_copy, wasm_size, v128_arg2_placeholder, sizeof(v128_arg2_placeholder));
+    if (!loc2) { fprintf(stderr, "Error: V128_ARG2_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    memcpy(loc2, operand2, sizeof(wah_v128_t));
+
+    uint8_t* loc3 = find_placeholder_location(wasm_binary_copy, wasm_size, v128_arg3_placeholder, sizeof(v128_arg3_placeholder));
+    if (!loc3) { fprintf(stderr, "Error: V128_ARG3_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    memcpy(loc3, operand3, sizeof(wah_v128_t));
+
+    err = wah_test_setup_context(test_name, wasm_binary_copy, wasm_size, &module, &ctx);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
         return err;
     }
-    printf("Module parsed successfully.\n");
 
-    err = wah_exec_context_create(&ctx, &module);
-    if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
-        wah_free_module(&module);
-        return err;
-    }
-
-    uint32_t func_idx = 0;
     wah_value_t result;
-
-    printf("Interpreting function %u...\n", func_idx);
-    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    err = wah_test_execute_function(test_name, &ctx, &module, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return err;
     }
-    printf("Function interpreted successfully.\n");
 
     err = compare_and_print_v128_result(test_name, &result.v128, (const wah_v128_t*)expected_val);
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
     printf("%s test completed successfully.\n", test_name);
-    return WAH_OK;
+    return err;
 }
 #define run_simd_ternary_op_test(n,b,o1,o2,o3,e) run_simd_ternary_op_test(n,b,sizeof(b),o1,o2,o3,e)
 
@@ -532,34 +547,8 @@ wah_error_t run_simd_ternary_op_test(const char* test_name, const uint8_t* wasm_
     0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b, \
     0x03, 0x02, 0x01, 0x00, \
     0x0a, 0x19, 0x01, 0x17, 0x00, \
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+        0xfd, 0x0c, V128_ARG1_PLACEHOLDER, \
         0xfd, (subopcode & 0x7f) | 0x80, subopcode >> 7, \
-        0x0b, \
-}
-
-// WASM template for _extract_lane (pop 1 v128, push 1 scalar, 1 immediate byte)
-#define EXTRACT_LANE_WASM(subopcode, laneidx) { \
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, \
-    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, \
-    0x03, 0x02, 0x01, 0x00, \
-    0x0a, 0x19, 0x01, 0x17, 0x00, \
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-        0xfd, subopcode, laneidx, \
-        0x0b, \
-}
-
-// WASM template for _replace_lane (pop 1 scalar, pop 1 v128, push 1 v128, 1 immediate byte)
-#define REPLACE_LANE_WASM(subopcode, laneidx) { \
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, \
-    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b, \
-    0x03, 0x02, 0x01, 0x00, \
-    0x0a, 0x23, 0x01, 0x21, 0x00, \
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, /* 10 NOPs (placeholder for scalar) */ \
-        0xfd, subopcode, laneidx, \
         0x0b, \
 }
 
@@ -569,7 +558,7 @@ wah_error_t run_simd_ternary_op_test(const char* test_name, const uint8_t* wasm_
     0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b, \
     0x03, 0x02, 0x01, 0x00, \
     0x0a, 0x10, 0x01, 0x0e, 0x00, \
-        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, /* 10 NOPs (placeholder for scalar) */ \
+        SCALAR_OP_PLACEHOLDER, \
         0xfd, subopcode, \
         0x0b, \
 }
@@ -577,178 +566,123 @@ wah_error_t run_simd_ternary_op_test(const char* test_name, const uint8_t* wasm_
 wah_error_t run_simd_unary_op_test(const char* test_name, const uint8_t* wasm_binary, size_t wasm_size, const wah_v128_t* operand, const wah_v128_t* expected_val) {
     wah_module_t module;
     wah_exec_context_t ctx;
-    wah_error_t err = WAH_OK;
+    wah_error_t err;
 
-    // Set the v128.const value in the WASM binary for the operand
     uint8_t wasm_binary_copy[wasm_size];
     memcpy(wasm_binary_copy, wasm_binary, wasm_size);
-    memcpy(wasm_binary_copy + 26, operand, sizeof(wah_v128_t));
 
-    printf("\n--- Testing %s ---\n", test_name);
-    printf("Parsing module...\n");
-    err = wah_parse_module(wasm_binary_copy, wasm_size, &module);
-    if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
-        return err;
-    }
-    printf("Module parsed successfully.\n");
+    uint8_t* loc1 = find_placeholder_location(wasm_binary_copy, wasm_size, v128_arg1_placeholder, sizeof(v128_arg1_placeholder));
+    if (!loc1) { fprintf(stderr, "Error: V128_ARG1_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    memcpy(loc1, operand, sizeof(wah_v128_t));
 
-    err = wah_exec_context_create(&ctx, &module);
+    err = wah_test_setup_context(test_name, wasm_binary_copy, wasm_size, &module, &ctx);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
-        wah_free_module(&module);
         return err;
     }
 
-    uint32_t func_idx = 0;
     wah_value_t result;
-
-    printf("Interpreting function %u...\n", func_idx);
-    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    err = wah_test_execute_function(test_name, &ctx, &module, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return err;
     }
-    printf("Function interpreted successfully.\n");
 
     err = compare_and_print_v128_result(test_name, &result.v128, (const wah_v128_t*)expected_val);
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
     printf("%s test completed successfully.\n", test_name);
-    return WAH_OK;
+    return err;
 }
 #define run_simd_unary_op_test(n,b,o,e) run_simd_unary_op_test(n,b,sizeof(b),o,e)
 
 wah_error_t run_simd_binary_op_i32_shift_test(const char* test_name, const uint8_t* wasm_binary, size_t wasm_size, const wah_v128_t* operand1, const wah_value_t* operand_scalar, wah_type_t scalar_type, const wah_v128_t* expected_val) {
     wah_module_t module;
     wah_exec_context_t ctx;
-    wah_error_t err = WAH_OK;
+    wah_error_t err;
 
-    // Set the v128.const and scalar.const values in the WASM binary
     uint8_t wasm_binary_copy[wasm_size];
     memcpy(wasm_binary_copy, wasm_binary, wasm_size);
-    memcpy(wasm_binary_copy + 26, operand1, sizeof(wah_v128_t));
-    WAH_CHECK(patch_scalar_const(wasm_binary_copy + 42, operand_scalar, scalar_type));
 
-    printf("\n--- Testing %s ---\n", test_name);
-    printf("Parsing module...\n");
-    err = wah_parse_module(wasm_binary_copy, wasm_size, &module);
-    if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
-        return err;
-    }
-    printf("Module parsed successfully.\n");
+    uint8_t* loc1 = find_placeholder_location(wasm_binary_copy, wasm_size, v128_arg1_placeholder, sizeof(v128_arg1_placeholder));
+    if (!loc1) { fprintf(stderr, "Error: V128_ARG1_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    memcpy(loc1, operand1, sizeof(wah_v128_t));
 
-    err = wah_exec_context_create(&ctx, &module);
+    uint8_t* loc2 = find_placeholder_location(wasm_binary_copy, wasm_size, scalar_op_placeholder, sizeof(scalar_op_placeholder));
+    if (!loc2) { fprintf(stderr, "Error: SCALAR_OP_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    WAH_CHECK(patch_scalar_const(loc2, operand_scalar, scalar_type));
+
+    err = wah_test_setup_context(test_name, wasm_binary_copy, wasm_size, &module, &ctx);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
-        wah_free_module(&module);
         return err;
     }
 
-    uint32_t func_idx = 0;
     wah_value_t result;
-
-    printf("Interpreting function %u...\n", func_idx);
-    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    err = wah_test_execute_function(test_name, &ctx, &module, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return err;
     }
-    printf("Function interpreted successfully.\n");
 
     err = compare_and_print_v128_result(test_name, &result.v128, (const wah_v128_t*)expected_val);
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
     printf("%s test completed successfully.\n", test_name);
-    return WAH_OK;
+    return err;
 }
 #define run_simd_binary_op_i32_shift_test(n,b,o1,o_scalar,s_type,e) run_simd_binary_op_i32_shift_test(n,b,sizeof(b),o1,o_scalar,s_type,e)
 
 wah_error_t run_simd_shuffle_swizzle_test(const char* test_name, const uint8_t* wasm_binary, size_t wasm_size, const wah_v128_t* expected_val) {
     wah_module_t module;
     wah_exec_context_t ctx;
-    wah_error_t err = WAH_OK;
+    wah_error_t err;
 
-    printf("\n--- Testing %s ---\n", test_name);
-    printf("Parsing module...\n");
-    err = wah_parse_module(wasm_binary, wasm_size, &module);
+    err = wah_test_setup_context(test_name, wasm_binary, wasm_size, &module, &ctx);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
-        return err;
-    }
-    printf("Module parsed successfully.\n");
-
-    err = wah_exec_context_create(&ctx, &module);
-    if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
-        wah_free_module(&module);
         return err;
     }
 
-    uint32_t func_idx = 0;
     wah_value_t result;
-
-    printf("Interpreting function %u...\n", func_idx);
-    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    err = wah_test_execute_function(test_name, &ctx, &module, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return err;
     }
-    printf("Function interpreted successfully.\n");
 
     err = compare_and_print_v128_result(test_name, &result.v128, (const wah_v128_t*)expected_val);
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
     printf("%s test completed successfully.\n", test_name);
-    return WAH_OK;
+    return err;
 }
 #define run_simd_shuffle_swizzle_test(n,b,e) run_simd_shuffle_swizzle_test(n,b,sizeof(b),e)
 
 wah_error_t run_simd_extract_lane_test(const char* test_name, const uint8_t* wasm_binary, size_t wasm_size, const wah_v128_t* operand, const wah_value_t* expected_val, wah_type_t expected_type) {
     wah_module_t module;
     wah_exec_context_t ctx;
-    wah_error_t err = WAH_OK;
+    wah_error_t err;
 
-    // Set the v128.const value in the WASM binary for the operand
     uint8_t wasm_binary_copy[wasm_size];
     memcpy(wasm_binary_copy, wasm_binary, wasm_size);
-    memcpy(wasm_binary_copy + 26, operand, sizeof(wah_v128_t));
 
-    printf("\n--- Testing %s ---\n", test_name);
-    printf("Parsing module...\n");
-    err = wah_parse_module(wasm_binary_copy, wasm_size, &module);
-    if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
-        return err;
-    }
-    printf("Module parsed successfully.\n");
+    uint8_t* loc1 = find_placeholder_location(wasm_binary_copy, wasm_size, (const uint8_t*)v128_arg1_placeholder, sizeof(v128_arg1_placeholder));
+    if (!loc1) { fprintf(stderr, "Error: V128_ARG1_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    memcpy(loc1, operand, sizeof(wah_v128_t));
 
-    err = wah_exec_context_create(&ctx, &module);
+    err = wah_test_setup_context(test_name, wasm_binary_copy, wasm_size, &module, &ctx);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
-        wah_free_module(&module);
         return err;
     }
 
-    uint32_t func_idx = 0;
     wah_value_t result;
-
-    printf("Interpreting function %u...\n", func_idx);
-    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    err = wah_test_execute_function(test_name, &ctx, &module, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return err;
     }
-    printf("Function interpreted successfully.\n");
 
     bool match = false;
     switch (expected_type) {
@@ -778,95 +712,70 @@ wah_error_t run_simd_extract_lane_test(const char* test_name, const uint8_t* was
 wah_error_t run_simd_replace_lane_test(const char* test_name, const uint8_t* wasm_binary, size_t wasm_size, const wah_v128_t* operand_v128, const wah_value_t* operand_scalar, wah_type_t scalar_type, const wah_v128_t* expected_val) {
     wah_module_t module;
     wah_exec_context_t ctx;
-    wah_error_t err = WAH_OK;
+    wah_error_t err;
 
-    // Set the v128.const and scalar.const values in the WASM binary
     uint8_t wasm_binary_copy[wasm_size];
     memcpy(wasm_binary_copy, wasm_binary, wasm_size);
-    memcpy(wasm_binary_copy + 26, operand_v128, sizeof(wah_v128_t));
-    WAH_CHECK(patch_scalar_const(wasm_binary_copy + 42, operand_scalar, scalar_type));
 
-    printf("\n--- Testing %s ---\n", test_name);
-    printf("Parsing module...\n");
-    err = wah_parse_module(wasm_binary_copy, wasm_size, &module);
-    if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
-        return err;
-    }
-    printf("Module parsed successfully.\n");
+    uint8_t* loc1 = find_placeholder_location(wasm_binary_copy, wasm_size, (const uint8_t*)v128_arg1_placeholder, sizeof(v128_arg1_placeholder));
+    if (!loc1) { fprintf(stderr, "Error: V128_ARG1_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    memcpy(loc1, operand_v128, sizeof(wah_v128_t));
 
-    err = wah_exec_context_create(&ctx, &module);
+    uint8_t* loc2 = find_placeholder_location(wasm_binary_copy, wasm_size, scalar_op_placeholder, sizeof(scalar_op_placeholder));
+    if (!loc2) { fprintf(stderr, "Error: SCALAR_OP_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    WAH_CHECK(patch_scalar_const(loc2, operand_scalar, scalar_type));
+
+    err = wah_test_setup_context(test_name, wasm_binary_copy, wasm_size, &module, &ctx);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
-        wah_free_module(&module);
         return err;
     }
 
-    uint32_t func_idx = 0;
     wah_value_t result;
-
-    printf("Interpreting function %u...\n", func_idx);
-    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    err = wah_test_execute_function(test_name, &ctx, &module, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return err;
     }
-    printf("Function interpreted successfully.\n");
 
     err = compare_and_print_v128_result(test_name, &result.v128, (const wah_v128_t*)expected_val);
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
     printf("%s test completed successfully.\n", test_name);
-    return WAH_OK;
+    return err;
 }
 #define run_simd_replace_lane_test(n,b,o_v128,o_scalar,s_type,e) run_simd_replace_lane_test(n,b,sizeof(b),o_v128,o_scalar,s_type,e)
 
 wah_error_t run_simd_splat_test(const char* test_name, const uint8_t* wasm_binary, size_t wasm_size, const wah_value_t* operand_scalar, wah_type_t scalar_type, const wah_v128_t* expected_val) {
     wah_module_t module;
     wah_exec_context_t ctx;
-    wah_error_t err = WAH_OK;
+    wah_error_t err;
 
-    // Set the scalar.const value in the WASM binary
     uint8_t wasm_binary_copy[wasm_size];
     memcpy(wasm_binary_copy, wasm_binary, wasm_size);
-    WAH_CHECK(patch_scalar_const(wasm_binary_copy + 24, operand_scalar, scalar_type));
 
-    printf("\n--- Testing %s ---\n", test_name);
-    printf("Parsing module...\n");
-    err = wah_parse_module(wasm_binary_copy, wasm_size, &module);
-    if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
-        return err;
-    }
-    printf("Module parsed successfully.\n");
+    uint8_t* loc1 = find_placeholder_location(wasm_binary_copy, wasm_size, scalar_op_placeholder, sizeof(scalar_op_placeholder));
+    if (!loc1) { fprintf(stderr, "Error: SCALAR_OP_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    WAH_CHECK(patch_scalar_const(loc1, operand_scalar, scalar_type));
 
-    err = wah_exec_context_create(&ctx, &module);
+    err = wah_test_setup_context(test_name, wasm_binary_copy, wasm_size, &module, &ctx);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
-        wah_free_module(&module);
         return err;
     }
 
-    uint32_t func_idx = 0;
     wah_value_t result;
-
-    printf("Interpreting function %u...\n", func_idx);
-    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    err = wah_test_execute_function(test_name, &ctx, &module, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return err;
     }
-    printf("Function interpreted successfully.\n");
 
     err = compare_and_print_v128_result(test_name, &result.v128, (const wah_v128_t*)expected_val);
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
     printf("%s test completed successfully.\n", test_name);
-    return WAH_OK;
+    return err;
 }
 #define run_simd_splat_test(n,b,o_scalar,s_type,e) run_simd_splat_test(n,b,sizeof(b),o_scalar,s_type,e)
 
@@ -996,30 +905,6 @@ void test_v128_not() {
     if (run_simd_unary_op_test("v128.not", v128_not_wasm, &operand, &expected) != WAH_OK) { exit(1); }
 }
 
-#define V128_UNARY_OP_WASM(subopcode) { \
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, \
-    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b, \
-    0x03, 0x02, 0x01, 0x00, \
-    0x0a, 0x19, 0x01, 0x17, 0x00, \
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-        0xfd, (subopcode & 0x7f) | 0x80, subopcode >> 7, \
-        0x0b, \
-};
-
-#define V128_BINARY_OP_WASM(subopcode) { \
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, \
-    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b, \
-    0x03, 0x02, 0x01, 0x00, \
-    0x0a, 0x2b, 0x01, 0x29, 0x00, \
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-        0xfd, (subopcode & 0x7f) | 0x80, subopcode >> 7, \
-        0x0b, \
-};
-
 // Test cases for v128.bitselect
 const uint8_t v128_bitselect_wasm[] = TERNARY_OP_WASM(0x52);
 void test_v128_bitselect() {
@@ -1033,41 +918,27 @@ void test_v128_bitselect() {
 wah_error_t run_simd_any_true_test(const char* test_name, const uint8_t* wasm_binary, size_t wasm_size, const wah_v128_t* operand, int32_t expected_val) {
     wah_module_t module;
     wah_exec_context_t ctx;
-    wah_error_t err = WAH_OK;
+    wah_error_t err;
 
-    // Set the v128.const value in the WASM binary for the operand
     uint8_t wasm_binary_copy[wasm_size];
     memcpy(wasm_binary_copy, wasm_binary, wasm_size);
-    memcpy(wasm_binary_copy + 26, operand, sizeof(wah_v128_t));
 
-    printf("\n--- Testing %s ---\n", test_name);
-    printf("Parsing module...\n");
-    err = wah_parse_module(wasm_binary_copy, wasm_size, &module);
-    if (err != WAH_OK) {
-        fprintf(stderr, "Error parsing %s module: %s\n", test_name, wah_strerror(err));
-        return err;
-    }
-    printf("Module parsed successfully.\n");
+    uint8_t* loc1 = find_placeholder_location(wasm_binary_copy, wasm_size, v128_arg1_placeholder, sizeof(v128_arg1_placeholder));
+    if (!loc1) { fprintf(stderr, "Error: V128_ARG1_PLACEHOLDER not found in %s\n", test_name); return WAH_ERROR_MISUSE; }
+    memcpy(loc1, operand, sizeof(wah_v128_t));
 
-    err = wah_exec_context_create(&ctx, &module);
+    err = wah_test_setup_context(test_name, wasm_binary_copy, wasm_size, &module, &ctx);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error creating execution context for %s: %s\n", test_name, wah_strerror(err));
-        wah_free_module(&module);
         return err;
     }
 
-    uint32_t func_idx = 0;
     wah_value_t result;
-
-    printf("Interpreting function %u...\n", func_idx);
-    err = wah_call(&ctx, &module, func_idx, NULL, 0, &result);
+    err = wah_test_execute_function(test_name, &ctx, &module, &result);
     if (err != WAH_OK) {
-        fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
         return err;
     }
-    printf("Function interpreted successfully.\n");
 
     if (result.i32 == expected_val) {
         printf("Result scalar matches expected value for %s.\n", test_name);
@@ -1081,7 +952,7 @@ wah_error_t run_simd_any_true_test(const char* test_name, const uint8_t* wasm_bi
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
     printf("%s test completed successfully.\n", test_name);
-    return WAH_OK;
+    return err;
 }
 #define run_simd_any_true_test(n,b,o,e) run_simd_any_true_test(n,b,sizeof(b),o,e)
 
@@ -1090,8 +961,7 @@ const uint8_t v128_any_true_wasm[] = {
     0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f,
     0x03, 0x02, 0x01, 0x00,
     0x0a, 0x18, 0x01, 0x16, 0x00,
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xfd, 0x0c, V128_ARG1_PLACEHOLDER,
         0xfd, 0x53,
         0x0b,
 };
@@ -1630,7 +1500,15 @@ void test_i8x16_shuffle() {
 }
 
 // Test cases for i8x16.extract_lane_s
-const uint8_t i8x16_extract_lane_s_wasm[] = EXTRACT_LANE_WASM(0x15, 0x01); // lane 1
+const uint8_t i8x16_extract_lane_s_wasm[] = {
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f,
+    0x03, 0x02, 0x01, 0x00,
+    0x0a, 0x19, 0x01, 0x17, 0x00,
+        0xfd, 0x0c, V128_ARG1_PLACEHOLDER,
+        0xfd, 0x15, 0x01,
+        0x0b,
+};
 void test_i8x16_extract_lane_s() {
     wah_v128_t operand = {{0x00, 0x81, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F}};
     wah_value_t expected = {.i32 = -127}; // operand.i8[1] is 0x81 = -127
@@ -1638,7 +1516,16 @@ void test_i8x16_extract_lane_s() {
 }
 
 // Test cases for i8x16.replace_lane
-const uint8_t i8x16_replace_lane_wasm[] = REPLACE_LANE_WASM(0x17, 0x01); // lane 1
+const uint8_t i8x16_replace_lane_wasm[] = {
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b,
+    0x03, 0x02, 0x01, 0x00,
+    0x0a, 0x23, 0x01, 0x21, 0x00,
+        0xfd, 0x0c, V128_ARG1_PLACEHOLDER,
+        SCALAR_OP_PLACEHOLDER,
+        0xfd, 0x17, 0x01,
+        0x0b,
+};
 void test_i8x16_replace_lane() {
     wah_v128_t operand_v128 = {{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F}};
     wah_value_t operand_scalar = {.i32 = 0xAA}; // Replace with 0xAA
@@ -1797,7 +1684,7 @@ void test_f64x2_promote_low_f32x4() {
 }
 
 // Test cases for I8X16_ABS
-const uint8_t i8x16_abs_wasm[] = V128_UNARY_OP_WASM(0x60);
+const uint8_t i8x16_abs_wasm[] = UNARY_OP_WASM(0x60);
 void test_i8x16_abs() {
     wah_v128_t v = {{0x01, 0xFF, 0x00, 0x7F, 0x80, 0x0A, 0xF6, 0x00, 0x01, 0xFF, 0x00, 0x7F, 0x80, 0x0A, 0xF6, 0x00}};
     wah_v128_t expected = {{0x01, 0x01, 0x00, 0x7F, 0x80, 0x0A, 0x0A, 0x00, 0x01, 0x01, 0x00, 0x7F, 0x80, 0x0A, 0x0A, 0x00}};
@@ -1810,9 +1697,8 @@ const uint8_t i8x16_shl_wasm[] = {
     0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b,
     0x03, 0x02, 0x01, 0x00,
     0x0a, 0x22, 0x01, 0x20, 0x00,
-        0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // v128.const ...
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, // (scalar)
+        0xfd, 0x0c, V128_ARG1_PLACEHOLDER, // v128.const ...
+        SCALAR_OP_PLACEHOLDER,
         0xfd, 0x6b, // i8x16.shl
         0x0b,
 };
@@ -1829,7 +1715,7 @@ void test_i8x16_shl() {
 }
 
 // Test cases for I8X16_MIN_S
-const uint8_t i8x16_min_s_wasm[] = V128_BINARY_OP_WASM(0x76);
+const uint8_t i8x16_min_s_wasm[] = BINARY_OP_WASM(0x76);
 void test_i8x16_min_s() {
     wah_v128_t v1 = {{0x01, 0x05, 0x7F, 0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x05, 0x7F, 0x80, 0x00, 0x00, 0x00, 0x00}};
     wah_v128_t v2 = {{0x02, 0x03, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00}};
@@ -1838,7 +1724,7 @@ void test_i8x16_min_s() {
 }
 
 // Test cases for I8X16_AVGR_U
-const uint8_t i8x16_avgr_u_wasm[] = V128_BINARY_OP_WASM(0x7B);
+const uint8_t i8x16_avgr_u_wasm[] = BINARY_OP_WASM(0x7B);
 void test_i8x16_avgr_u() {
     wah_v128_t v1 = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}};
     wah_v128_t v2 = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}};
@@ -1852,7 +1738,7 @@ void test_i8x16_avgr_u() {
 }
 
 // Test cases for I16X8_EXTEND_LOW_I8X16_S
-const uint8_t i16x8_extend_low_i8x16_s_wasm[] = V128_UNARY_OP_WASM(0x87);
+const uint8_t i16x8_extend_low_i8x16_s_wasm[] = UNARY_OP_WASM(0x87);
 void test_i16x8_extend_low_i8x16_s() {
     wah_v128_t v = {{0x01, 0xFF, 0x00, 0x7F, 0x80, 0x0A, 0xF6, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
     wah_v128_t expected = {{0x01, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x7F, 0x00, 0x80, 0xFF, 0x0A, 0x00, 0xF6, 0xFF, 0x00, 0x00}}; // i16 values
@@ -1860,7 +1746,7 @@ void test_i16x8_extend_low_i8x16_s() {
 }
 
 // Test cases for I16X8_NARROW_I32X4_S
-const uint8_t i16x8_narrow_i32x4_s_wasm[] = V128_BINARY_OP_WASM(0x85);
+const uint8_t i16x8_narrow_i32x4_s_wasm[] = BINARY_OP_WASM(0x85);
 void test_i16x8_narrow_i32x4_s() {
     wah_v128_t v1 = {{0x01, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // i32: 1, -1
     wah_v128_t v2 = {{0x00, 0x80, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // i32: -32768, 65535 (saturates to 32767)
@@ -1869,7 +1755,7 @@ void test_i16x8_narrow_i32x4_s() {
 }
 
 // Test cases for I16X8_Q15MULR_SAT_S
-const uint8_t i16x8_q15mulr_sat_s_wasm[] = V128_BINARY_OP_WASM(0x82);
+const uint8_t i16x8_q15mulr_sat_s_wasm[] = BINARY_OP_WASM(0x82);
 void test_i16x8_q15mulr_sat_s() {
     wah_v128_t v1 = {{0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40}}; // 0.5 in Q15
     wah_v128_t v2 = {{0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40}}; // 0.5 in Q15
@@ -1883,7 +1769,7 @@ void test_i16x8_q15mulr_sat_s() {
 }
 
 // Test cases for I32X4_DOT_I16X8_S
-const uint8_t i32x4_dot_i16x8_s_wasm[] = V128_BINARY_OP_WASM(0xBA);
+const uint8_t i32x4_dot_i16x8_s_wasm[] = BINARY_OP_WASM(0xBA);
 void test_i32x4_dot_i16x8_s() {
     wah_v128_t v1 = {{0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00, 0x08, 0x00}}; // i16: 1, 2, 3, 4, 5, 6, 7, 8
     wah_v128_t v2 = {{0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00, 0x08, 0x00, 0x09, 0x00}}; // i16: 2, 3, 4, 5, 6, 7, 8, 9
@@ -1892,7 +1778,7 @@ void test_i32x4_dot_i16x8_s() {
 }
 
 // Test cases for I32X4_EXTMUL_LOW_I16X8_S
-const uint8_t i32x4_extmul_low_i16x8_s_wasm[] = V128_BINARY_OP_WASM(0xBC);
+const uint8_t i32x4_extmul_low_i16x8_s_wasm[] = BINARY_OP_WASM(0xBC);
 void test_i32x4_extmul_low_i16x8_s() {
     wah_v128_t v1 = {{0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // i16: 1, 2
     wah_v128_t v2 = {{0x02, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // i16: 2, 3
@@ -1901,7 +1787,7 @@ void test_i32x4_extmul_low_i16x8_s() {
 }
 
 // Test cases for I64X2_ABS
-const uint8_t i64x2_abs_wasm[] = V128_UNARY_OP_WASM(0xC0);
+const uint8_t i64x2_abs_wasm[] = UNARY_OP_WASM(0xC0);
 void test_i64x2_abs() {
     wah_v128_t v = {{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}; // i64: 1, -1
     wah_v128_t expected = {{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // i64: 1, 1
@@ -1909,7 +1795,7 @@ void test_i64x2_abs() {
 }
 
 // Test cases for I64X2_EXTEND_HIGH_I32X4_U
-const uint8_t i64x2_extend_high_i32x4_u_wasm[] = V128_UNARY_OP_WASM(0xCA);
+const uint8_t i64x2_extend_high_i32x4_u_wasm[] = UNARY_OP_WASM(0xCA);
 void test_i64x2_extend_high_i32x4_u() {
     wah_v128_t v = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00}}; // u32: ?, ?, 0xFFFFFFFF, 0
     wah_v128_t expected = {{0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // u64: 0xFFFFFFFF, 0
@@ -1917,7 +1803,7 @@ void test_i64x2_extend_high_i32x4_u() {
 }
 
 // Test cases for F32X4_ABS
-const uint8_t f32x4_abs_wasm[] = V128_UNARY_OP_WASM(0xE0);
+const uint8_t f32x4_abs_wasm[] = UNARY_OP_WASM(0xE0);
 void test_f32x4_abs() {
     wah_v128_t v = {{0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0xBF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // f32: 1.0, -1.0, 0.0
     wah_v128_t expected = {{0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // f32: 1.0, 1.0, 0.0
@@ -1925,7 +1811,7 @@ void test_f32x4_abs() {
 }
 
 // Test cases for F32X4_CEIL
-const uint8_t f32x4_ceil_wasm[] = V128_UNARY_OP_WASM(0x67);
+const uint8_t f32x4_ceil_wasm[] = UNARY_OP_WASM(0x67);
 void test_f32x4_ceil() {
     wah_v128_t v = {{0x00, 0x00, 0x20, 0x40, 0x00, 0x00, 0x20, 0xC0, 0xCD, 0xCC, 0xCC, 0x3F, 0x00, 0x00, 0x00, 0x00}}; // f32: 2.5, -2.5, 1.6
     wah_v128_t expected = {{0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00}}; // f32: 3.0, -2.0, 2.0
@@ -1933,7 +1819,7 @@ void test_f32x4_ceil() {
 }
 
 // Test cases for F32X4_MIN
-const uint8_t f32x4_min_wasm[] = V128_BINARY_OP_WASM(0xE8);
+const uint8_t f32x4_min_wasm[] = BINARY_OP_WASM(0xE8);
 void test_f32x4_min() {
     wah_v128_t v1 = {{0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x00}}; // f32: 1.0, 0.0, 1.0
     wah_v128_t v2 = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // f32: 0.0, 1.0, 0.0
@@ -1942,7 +1828,7 @@ void test_f32x4_min() {
 }
 
 // Test cases for F64X2_NEG
-const uint8_t f64x2_neg_wasm[] = V128_UNARY_OP_WASM(0xED);
+const uint8_t f64x2_neg_wasm[] = UNARY_OP_WASM(0xED);
 void test_f64x2_neg() {
     wah_v128_t v = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xBF}}; // f64: 1.0, -1.0
     wah_v128_t expected = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xBF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F}}; // f64: -1.0, 1.0
@@ -1950,7 +1836,7 @@ void test_f64x2_neg() {
 }
 
 // Test cases for F64X2_SQRT
-const uint8_t f64x2_sqrt_wasm[] = V128_UNARY_OP_WASM(0xEF);
+const uint8_t f64x2_sqrt_wasm[] = UNARY_OP_WASM(0xEF);
 void test_f64x2_sqrt() {
     wah_v128_t v = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // f64: 4.0, 0.0
     wah_v128_t expected = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // f64: 2.0, 0.0
