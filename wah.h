@@ -763,6 +763,24 @@ static inline wah_error_t wah_decode_sleb128_64(const uint8_t **ptr, const uint8
     return WAH_OK;
 }
 
+// Helper function to decode a ULEB128 count and validate it against remaining section size
+static inline wah_error_t wah_decode_and_validate_count(const uint8_t **ptr, const uint8_t *section_end, uint32_t *count, uint32_t min_bytes_per_item) {
+    WAH_CHECK(wah_decode_uleb128(ptr, section_end, count));
+
+    // Check for potential integer overflow before multiplication
+    if (min_bytes_per_item > 0 && *count > (UINT32_MAX / min_bytes_per_item)) {
+        return WAH_ERROR_TOO_LARGE; // Count * min_bytes_per_item would overflow
+    }
+
+    // Ensure that the declared count of items does not exceed the remaining section size.
+    // This prevents excessively large allocations and potential hangs/OOM.
+    // We use min_bytes_per_item to make a more accurate check.
+    if ((uint64_t)*count * min_bytes_per_item > (uint64_t)(section_end - *ptr)) {
+        return WAH_ERROR_VALIDATION_FAILED;
+    }
+    return WAH_OK;
+}
+
 // Helper function to validate if a byte sequence is valid UTF-8
 static inline bool wah_is_valid_utf8(const char *s, size_t len) {
     const unsigned char *bytes = (const unsigned char *)s;
@@ -1253,7 +1271,8 @@ static wah_error_t wah_read_section_header(const uint8_t **ptr, const uint8_t *e
 // --- Internal Section Parsing Functions ---
 static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
-    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
+    // A function type requires at least 3 bytes (form, param_count_uleb128, result_count_uleb128).
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 3));
 
     module->type_count = count;
     WAH_MALLOC_ARRAY(module->types, count);
@@ -1295,7 +1314,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
 
 static wah_error_t wah_parse_function_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
-    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 1));
 
     module->function_count = count;
     WAH_MALLOC_ARRAY(module->function_type_indices, count);
@@ -2091,7 +2110,8 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     memset(&vctx, 0, sizeof(wah_validation_context_t));
 
     uint32_t count;
-    WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &count), cleanup);
+    // A code body entry requires at least 3 bytes (body_size, num_locals, END opcode).
+    WAH_CHECK_GOTO(wah_decode_and_validate_count(ptr, section_end, &count, 3), cleanup);
     WAH_ENSURE_GOTO(count == module->function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
     module->code_count = count;
     WAH_MALLOC_ARRAY_GOTO(module->code_bodies, count, cleanup);
@@ -2105,7 +2125,8 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
         // Parse locals
         uint32_t num_local_entries;
-        WAH_CHECK_GOTO(wah_decode_uleb128(ptr, code_body_end, &num_local_entries), cleanup);
+        // Each local entry requires at least 2 bytes (local_type_count, local_type).
+        WAH_CHECK_GOTO(wah_decode_and_validate_count(ptr, code_body_end, &num_local_entries, 2), cleanup);
 
         uint32_t current_local_count = 0;
         const uint8_t* ptr_count = *ptr;
@@ -2198,7 +2219,9 @@ cleanup:
 
 static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
-    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
+    // A global entry requires at least 5 bytes (type, is_mutable, init_expr (min 3 bytes)).
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 5));
+
     module->global_count = count;
     WAH_MALLOC_ARRAY(module->globals, count);
     memset(module->globals, 0, sizeof(wah_global_t) * count);
@@ -2257,7 +2280,9 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
 
 static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
-    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
+    // A memory entry requires at least 2 bytes (flags, min_pages_uleb128).
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 2));
+
     module->memory_count = count;
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->memories, count);
@@ -2281,7 +2306,9 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
 
 static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
-    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
+    // A table entry requires at least 3 bytes (elem_type, flags, min_elements_uleb128).
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 3));
+
     module->table_count = count;
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->tables, count);
@@ -2325,8 +2352,9 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
 
 static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     wah_error_t err = WAH_OK;
-    uint32_t count = 0;
-    WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &count), cleanup);
+    uint32_t count;
+    // An export entry requires at least 3 bytes (name_len, kind, index).
+    WAH_CHECK_GOTO(wah_decode_and_validate_count(ptr, section_end, &count, 3), cleanup);
 
     module->export_count = count;
     WAH_MALLOC_ARRAY_GOTO(module->exports, count, cleanup);
@@ -2414,7 +2442,9 @@ static wah_error_t wah_parse_start_section(const uint8_t **ptr, const uint8_t *s
 
 static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
-    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
+    // An element segment requires at least 5 bytes (table_idx, offset_expr (min 3 bytes), num_elems).
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 5));
+
     module->element_segment_count = count;
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->element_segments, count);
@@ -2458,7 +2488,8 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
 
 static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
-    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &count));
+    // A data segment requires at least 2 bytes (flags, data_len_uleb128).
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 2));
 
     // If a datacount section was present, validate that the data section count matches.
     // Otherwise, set the data_segment_count from this section.
