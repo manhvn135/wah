@@ -50,6 +50,13 @@ static const uint8_t wasm_binary_code_no_func_section[] = {
     0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b, // size 2, 0 locals, end
 };
 
+// This WASM module has a datacount section but no data section.
+// This should result in WAH_ERROR_VALIDATION_FAILED.
+static const uint8_t wasm_binary_datacount_no_data_section[] = {
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60,
+  0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x0c, 0x02, 0x80, 0x02
+};
+
 // This WASM module has the Memory Section before the Table Section (invalid order)
 static const uint8_t wasm_binary_invalid_section_order_mem_table[] = {
     // Magic + Version
@@ -77,6 +84,40 @@ static const uint8_t wasm_binary_invalid_section_order_mem_table[] = {
     // Code Section
     0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
 };
+
+static int test_zero_params_zero_results_func_type() {
+    printf("Running test_zero_params_zero_results_func_type...\n");
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    wah_error_t err = wah_parse_module(wasm_binary_zero_params, sizeof(wasm_binary_zero_params), &module);
+
+    if (err == WAH_OK) {
+        printf("  - PASSED: Module with zero-count types parsed successfully.\n");
+        wah_free_module(&module);
+        return 0;
+    } else {
+        fprintf(stderr, "Assertion failed: Expected WAH_OK for zero-count types, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+}
+
+static int test_invalid_section_order_mem_table() {
+    printf("Running test_invalid_section_order_mem_table...\n");
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    wah_error_t err = wah_parse_module(wasm_binary_invalid_section_order_mem_table, sizeof(wasm_binary_invalid_section_order_mem_table), &module);
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "Assertion failed: Expected WAH_ERROR_VALIDATION_FAILED for invalid section order, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: Invalid section order (Memory before Table) correctly failed validation.\n");
+    return 0;
+}
 
 int test_invalid_element_segment_func_idx() {
     printf("Running test_invalid_element_segment_func_idx...\n");
@@ -332,35 +373,38 @@ static int test_unused_opcode_validation_failure() {
     return 0;
 }
 
+// Test case for f.wasm: datacount section present, but no data section.
+// This should result in WAH_ERROR_VALIDATION_FAILED.
+static int test_datacount_no_data_section() {
+    printf("Running test_datacount_no_data_section...\n");
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    wah_error_t err = wah_parse_module(wasm_binary_datacount_no_data_section, sizeof(wasm_binary_datacount_no_data_section), &module);
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_datacount_no_data_section FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: Module with datacount but no data correctly failed validation.\n");
+    return 0;
+}
+
 int main(void) {
     int result = 0;
 
-    wah_module_t module;
-    wah_error_t err;
-
     printf("--- Running Parser Correctness Test ---\n");
 
-    printf("Testing function type with 0 params and 0 results...\n");
-    err = wah_parse_module(wasm_binary_zero_params, sizeof(wasm_binary_zero_params), &module);
-
-    assert(err == WAH_OK);
-    if (err == WAH_OK) {
-        printf("  - PASSED: Module with zero-count types parsed successfully.\n");
-        wah_free_module(&module);
-    } else {
-        printf("  - FAILED: Module parsing failed with error: %s\n", wah_strerror(err));
-        return 1;
-    }
-
-    printf("Testing invalid section order (Memory before Table)...\n");
-    err = wah_parse_module(wasm_binary_invalid_section_order_mem_table, sizeof(wasm_binary_invalid_section_order_mem_table), &module);
-    assert(err == WAH_ERROR_VALIDATION_FAILED);
+    result |= test_zero_params_zero_results_func_type();
+    result |= test_invalid_section_order_mem_table();
     result |= test_invalid_element_segment_func_idx();
     result |= test_code_section_no_function_section();
     result |= test_function_section_no_code_section();
     result |= test_parse_data_no_datacount_memory_init_fails();
     result |= test_deferred_data_validation_failure();
     result |= test_unused_opcode_validation_failure();
+    result |= test_datacount_no_data_section();
 
     if (result == 0) {
         printf("All parser tests passed!\n");

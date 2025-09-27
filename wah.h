@@ -3019,6 +3019,11 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
     // Validate data segment references
     WAH_ENSURE_GOTO(module->data_segment_count >= module->min_data_segment_count_required, WAH_ERROR_VALIDATION_FAILED, cleanup_parse);
 
+    // If a data count section was present, ensure data segments were actually allocated.
+    if (module->has_data_count_section && module->data_segment_count > 0) {
+        WAH_ENSURE_GOTO(module->data_segments != NULL, WAH_ERROR_VALIDATION_FAILED, cleanup_parse);
+    }
+
     return WAH_OK;
 
 cleanup_parse:
