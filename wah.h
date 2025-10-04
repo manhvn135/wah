@@ -2121,6 +2121,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         uint32_t body_size;
         WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &body_size), cleanup);
 
+        WAH_ENSURE_GOTO(body_size <= (size_t)(section_end - *ptr), WAH_ERROR_VALIDATION_FAILED, cleanup);
         const uint8_t *code_body_end = *ptr + body_size;
 
         // Parse locals

@@ -85,6 +85,37 @@ static const uint8_t wasm_binary_invalid_section_order_mem_table[] = {
     0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
 };
 
+#define REPEAT10(x) x,x,x,x,x,x,x,x,x,x
+#define REPEAT100(x) REPEAT10(REPEAT10(x))
+#define REPEAT1000(x) REPEAT10(REPEAT10(REPEAT10(x)))
+
+// This WASM module is known to cause a validation failure due to an oversized code body.
+static const uint8_t wasm_binary_malformed_code_body_size[] = {
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60,
+    0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x0a, 0x01,
+    0x06, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x0a, 0x30, 0x01,
+    0xae, 0xff, 0xfa, 0x30, 0x8d, 0x8e, 0x30, 0x30, 0x30, 0x30, 0x30,
+    REPEAT1000(0x30), REPEAT1000(0x30), REPEAT1000(0x30), REPEAT1000(0x30), // 4000x `0x30,`
+    REPEAT10(0x30), REPEAT10(0x30), REPEAT10(0x30), REPEAT10(0x30), REPEAT10(0x30), // 50x `0x30,`
+};
+
+static int test_malformed_code_body_size_wasm() {
+    printf("Running test_malformed_code_body_size_wasm...\n");
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    wah_error_t err = wah_parse_module(wasm_binary_malformed_code_body_size, sizeof(wasm_binary_malformed_code_body_size), &module);
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "Assertion failed: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: malformed code body size correctly failed validation.\n");
+    return 0;
+}
+
 static int test_zero_params_zero_results_func_type() {
     printf("Running test_zero_params_zero_results_func_type...\n");
     wah_module_t module;
@@ -467,6 +498,7 @@ int main(void) {
     result |= test_deferred_data_validation_failure();
     result |= test_unused_opcode_validation_failure();
     result |= test_datacount_no_data_section();
+    result |= test_malformed_code_body_size_wasm();
     result |= test_all_hang_wasm_parsing_errors();
 
     if (result == 0) {

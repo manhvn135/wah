@@ -82,6 +82,36 @@ static const uint8_t wasm_binary_local_count_overflow[] = {
         0x0B                                        // Function Body: END opcode
 };
 
+// --- Test Case 6: ULEB128 too long (5th byte has continuation bit set) ---
+// This tests a ULEB128 sequence that is technically 5 bytes long,
+// but the 5th byte still has the continuation bit set, indicating
+// that more bytes are expected for a 32-bit value. This should
+// trigger WAH_ERROR_TOO_LARGE as per the wah_decode_uleb128 implementation.
+static const uint8_t wasm_binary_uleb128_too_long[] = {
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // Type: () -> ()
+    0x03, 0x02, 0x01, 0x00,             // Func: type 0
+    0x0a, 0x08, 0x01,                   // Code Section size 8, 1 func
+    // Body size: ULEB128 with 5th byte having continuation bit set
+    0x80, 0x80, 0x80, 0x80, 0x80,       // This is 5 bytes, but the last byte (0x80) still has MSB set
+    0x00, 0x0b,                         // Body content (will not be reached)
+};
+
+// --- Test Case 7: ULEB128 truncated (input ends prematurely) ---
+// This tests a ULEB128 sequence that ends prematurely,
+// before the continuation bit is cleared. This should
+// trigger WAH_ERROR_UNEXPECTED_EOF.
+static const uint8_t wasm_binary_uleb128_truncated[] = {
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // Type: () -> ()
+    0x03, 0x02, 0x01, 0x00,             // Func: type 0
+    0x0a, 0x07, 0x01,                   // Code Section size 7, 1 func
+    // Body size: ULEB128 truncated
+    0x80, 0x80, 0x80, 0x80,             // This is 4 bytes, but the last byte (0x80) still has MSB set, expecting more
+    // No more bytes, so it's truncated
+};
+
+
 int main(void) {
     wah_module_t module;
     wah_error_t err;
@@ -117,6 +147,16 @@ int main(void) {
     printf("5. Testing local count overflow...\n");
     err = wah_parse_module(wasm_binary_local_count_overflow, sizeof(wasm_binary_local_count_overflow), &module);
     assert(err == WAH_ERROR_TOO_LARGE); // Expecting TOO_LARGE due to overflow check
+    printf("  - PASSED\n");
+
+    printf("6. Testing ULEB128 too long (5th byte has continuation bit set)...\n");
+    err = wah_parse_module(wasm_binary_uleb128_too_long, sizeof(wasm_binary_uleb128_too_long), &module);
+    assert(err == WAH_ERROR_TOO_LARGE);
+    printf("  - PASSED\n");
+
+    printf("7. Testing ULEB128 truncated (input ends prematurely)...\n");
+    err = wah_parse_module(wasm_binary_uleb128_truncated, sizeof(wasm_binary_uleb128_truncated), &module);
+    assert(err == WAH_ERROR_UNEXPECTED_EOF);
     printf("  - PASSED\n");
 
     printf("--- All Overflow Tests Passed ---\n");
