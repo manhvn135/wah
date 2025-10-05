@@ -1843,6 +1843,179 @@ void test_f64x2_sqrt() {
     if (run_simd_unary_op_test("f64x2.sqrt", f64x2_sqrt_wasm, &v, &expected) != WAH_OK) { exit(1); }
 }
 
+// Test cases for I8X16_RELAXED_SWIZZLE
+const uint8_t i8x16_relaxed_swizzle_wasm[] = BINARY_OP_WASM(0x100);
+void test_i8x16_relaxed_swizzle() {
+    wah_v128_t data = {{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F}};
+    wah_v128_t mask = {{0x0F, 0x0E, 0x0D, 0x0C, 0x0B, 0x0A, 0x09, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00}};
+    wah_v128_t expected = {{0x0F, 0x0E, 0x0D, 0x0C, 0x0B, 0x0A, 0x09, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00}};
+    if (run_simd_binary_op_test("i8x16.relaxed_swizzle", i8x16_relaxed_swizzle_wasm, &data, &mask, &expected) != WAH_OK) { exit(1); }
+
+    // Test with out-of-bounds mask indices (should result in 0)
+    mask = (wah_v128_t){{0x10, 0x11, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D}};
+    expected = (wah_v128_t){{0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D}};
+    if (run_simd_binary_op_test("i8x16.relaxed_swizzle (oob mask)", i8x16_relaxed_swizzle_wasm, &data, &mask, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for I32X4_RELAXED_TRUNC_F32X4_S
+const uint8_t i32x4_relaxed_trunc_f32x4_s_wasm[] = UNARY_OP_WASM(0x101);
+void test_i32x4_relaxed_trunc_f32x4_s() {
+    wah_v128_t operand = { .f32 = {1.5f, -2.5f, 2147483647.0f, -2147483648.0f} };
+    wah_v128_t expected = { .i32 = {1, -2, 2147483647, -2147483648} };
+    if (run_simd_unary_op_test("i32x4.relaxed_trunc_f32x4_s", i32x4_relaxed_trunc_f32x4_s_wasm, &operand, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for I32X4_RELAXED_TRUNC_F32X4_U
+const uint8_t i32x4_relaxed_trunc_f32x4_u_wasm[] = UNARY_OP_WASM(0x102);
+void test_i32x4_relaxed_trunc_f32x4_u() {
+    wah_v128_t operand = { .f32 = {1.5f, -2.5f, 4294967295.0f, 0.0f} };
+    wah_v128_t expected = { .u32 = {1, 0, 4294967295U, 0} };
+    if (run_simd_unary_op_test("i32x4.relaxed_trunc_f32x4_u", i32x4_relaxed_trunc_f32x4_u_wasm, &operand, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for F32X4_RELAXED_MADD
+const uint8_t f32x4_relaxed_madd_wasm[] = TERNARY_OP_WASM(0x105);
+void test_f32x4_relaxed_madd() {
+    wah_v128_t a = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} };
+    wah_v128_t b = { .f32 = {2.0f, 3.0f, 4.0f, 5.0f} };
+    wah_v128_t c = { .f32 = {0.5f, 1.0f, 1.5f, 2.0f} };
+    wah_v128_t expected = { .f32 = {2.5f, 7.0f, 13.5f, 22.0f} }; // (a*b)+c
+    if (run_simd_ternary_op_test("f32x4.relaxed_madd", f32x4_relaxed_madd_wasm, &a, &b, &c, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test case for f32x4.relaxed_madd determinism (non-FMA behavior)
+void test_f32x4_relaxed_madd_determinism() {
+    // Values chosen to expose FMA vs. non-FMA differences for f32
+    // a = 1 + 2^-20
+    // b = 1 + 2^-20
+    // c = -(1 + 2^-19)
+    // Mathematically: a*b+c = (1 + 2^-19 + 2^-40) - (1 + 2^-19) = 2^-40
+    // Non-FMA (two roundings): fl(a*b) = 1 + 2^-19 (2^-40 is lost)
+    //                          fl(fl(a*b) + c) = fl((1 + 2^-19) - (1 + 2^-19)) = 0.0f
+    // FMA (one rounding): fl(a*b+c) = 2^-40
+
+    float val_a = 1.0f + powf(2.0f, -20.0f);
+    float val_c = -(1.0f + powf(2.0f, -19.0f));
+
+    wah_v128_t a = { .f32 = {val_a, val_a, val_a, val_a} };
+    wah_v128_t b = { .f32 = {val_a, val_a, val_a, val_a} }; // b is same as a
+    wah_v128_t c = { .f32 = {val_c, val_c, val_c, val_c} };
+
+    // Expected result for non-FMA behavior (separate multiply and add)
+    wah_v128_t expected = { .f32 = {0.0f, 0.0f, 0.0f, 0.0f} };
+
+    if (run_simd_ternary_op_test("f32x4.relaxed_madd_determinism", f32x4_relaxed_madd_wasm, &a, &b, &c, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for I8X16_RELAXED_LANESELECT
+const uint8_t i8x16_relaxed_laneselect_wasm[] = TERNARY_OP_WASM(0x109);
+void test_i8x16_relaxed_laneselect() {
+    wah_v128_t v1 = {{0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00}}; // mask
+    wah_v128_t v2 = {{0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA}}; // true_val
+    wah_v128_t v3 = {{0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55}}; // false_val
+    wah_v128_t expected = {{0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55}};
+    if (run_simd_ternary_op_test("i8x16.relaxed_laneselect", i8x16_relaxed_laneselect_wasm, &v1, &v2, &v3, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for F32X4_RELAXED_MIN
+const uint8_t f32x4_relaxed_min_wasm[] = BINARY_OP_WASM(0x10D);
+void test_f32x4_relaxed_min() {
+    wah_v128_t v1 = { .f32 = {1.0f, 5.0f, 3.0f, 8.0f} };
+    wah_v128_t v2 = { .f32 = {2.0f, 3.0f, 3.0f, 7.0f} };
+    wah_v128_t expected = { .f32 = {1.0f, 3.0f, 3.0f, 7.0f} };
+    if (run_simd_binary_op_test("f32x4.relaxed_min", f32x4_relaxed_min_wasm, &v1, &v2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for I16X8_RELAXED_Q15MULR_S
+const uint8_t i16x8_relaxed_q15mulr_s_wasm[] = BINARY_OP_WASM(0x111);
+void test_i16x8_relaxed_q15mulr_s() {
+    wah_v128_t v1 = {{0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40}}; // 0.5 in Q15
+    wah_v128_t v2 = {{0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40}}; // 0.5 in Q15
+    wah_v128_t expected = {{0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20}}; // 0.25 in Q15
+    if (run_simd_binary_op_test("i16x8.relaxed_q15mulr_s", i16x8_relaxed_q15mulr_s_wasm, &v1, &v2, &expected) != WAH_OK) { exit(1); }
+
+    v1 = (wah_v128_t){{0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F}}; // 1.0 in Q15
+    v2 = (wah_v128_t){{0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F}}; // 1.0 in Q15
+    expected = (wah_v128_t){{0xFE, 0x7F, 0xFE, 0x7F, 0xFE, 0x7F, 0xFE, 0x7F, 0xFE, 0x7F, 0xFE, 0x7F, 0xFE, 0x7F, 0xFE, 0x7F}}; // 32766 in Q15 (saturated)
+    if (run_simd_binary_op_test("i16x8.relaxed_q15mulr_s", i16x8_relaxed_q15mulr_s_wasm, &v1, &v2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for f32x4.pmax (NaN handling)
+const uint8_t f32x4_pmax_wasm[] = BINARY_OP_WASM(0xEB);
+void test_f32x4_pmax_nan_handling() {
+    wah_v128_t operand1 = { .f32 = {1.0f, NAN, 3.0f, NAN} };
+    wah_v128_t operand2 = { .f32 = {2.0f, 2.0f, NAN, NAN} };
+    wah_v128_t expected = { .f32 = {2.0f, WAH_CANONICAL_NAN32.f, WAH_CANONICAL_NAN32.f, WAH_CANONICAL_NAN32.f} };
+    if (run_simd_binary_op_test("f32x4.pmax_nan_handling", f32x4_pmax_wasm, &operand1, &operand2, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for I16X8_RELAXED_DOT_I8X16_I7X16_S
+const uint8_t i16x8_relaxed_dot_i8x16_i7x16_s_wasm[] = BINARY_OP_WASM(0x112);
+void test_i16x8_relaxed_dot_i8x16_i7x16_s() {
+    // a (i8x16): [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    // b (i7x16): [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8]
+    // Note: i7 values are represented as i8, where bit 6 is sign bit.
+    // 1 (0x01), -1 (0x7F, sign-extended from 0x3F), 2 (0x02), -2 (0x7E, sign-extended from 0x3E)
+    wah_v128_t a = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}};
+    wah_v128_t b = {{0x01, 0x7F, 0x02, 0x7E, 0x03, 0x7D, 0x04, 0x7C, 0x05, 0x7B, 0x06, 0x7A, 0x07, 0x79, 0x08, 0x78}};
+
+    // Expected results for i16x8:
+    // Lane 0: (1 * 1) + (2 * -1) = 1 - 2 = -1 (0xFF, 0xFF)
+    // Lane 1: (3 * 2) + (4 * -2) = 6 - 8 = -2 (0xFE, 0xFF)
+    // Lane 2: (5 * 3) + (6 * -3) = 15 - 18 = -3 (0xFD, 0xFF)
+    // Lane 3: (7 * 4) + (8 * -4) = 28 - 32 = -4 (0xFC, 0xFF)
+    // Lane 4: (9 * 5) + (10 * -5) = 45 - 50 = -5 (0xFB, 0xFF)
+    // Lane 5: (11 * 6) + (12 * -6) = 66 - 72 = -6 (0xFA, 0xFF)
+    // Lane 6: (13 * 7) + (14 * -7) = 91 - 98 = -7 (0xF9, 0xFF)
+    // Lane 7: (15 * 8) + (16 * -8) = 120 - 128 = -8 (0xF8, 0xFF)
+    wah_v128_t expected = {{0xFF, 0xFF, 0xFE, 0xFF, 0xFD, 0xFF, 0xFC, 0xFF, 0xFB, 0xFF, 0xFA, 0xFF, 0xF9, 0xFF, 0xF8, 0xFF}};
+
+    if (run_simd_binary_op_test("i16x8.relaxed_dot_i8x16_i7x16_s", i16x8_relaxed_dot_i8x16_i7x16_s_wasm, &a, &b, &expected) != WAH_OK) { exit(1); }
+
+    // Test with all positive values
+    a = (wah_v128_t){{0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01}};
+    b = (wah_v128_t){{0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01}};
+    expected = (wah_v128_t){{0x02, 0x00, 0x02, 0x00, 0x02, 0x00, 0x02, 0x00, 0x02, 0x00, 0x02, 0x00, 0x02, 0x00, 0x02, 0x00}};
+    if (run_simd_binary_op_test("i16x8.relaxed_dot_i8x16_i7x16_s (positive)", i16x8_relaxed_dot_i8x16_i7x16_s_wasm, &a, &b, &expected) != WAH_OK) { exit(1); }
+
+    // Test with zero values
+    a = (wah_v128_t){{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+    b = (wah_v128_t){{0x01, 0x7F, 0x02, 0x7E, 0x03, 0x7D, 0x04, 0x7C, 0x05, 0x7B, 0x06, 0x7A, 0x07, 0x79, 0x08, 0x78}};
+    expected = (wah_v128_t){{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+    if (run_simd_binary_op_test("i16x8.relaxed_dot_i8x16_i7x16_s (zero a)", i16x8_relaxed_dot_i8x16_i7x16_s_wasm, &a, &b, &expected) != WAH_OK) { exit(1); }
+}
+
+// Test cases for I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S
+const uint8_t i32x4_relaxed_dot_i8x16_i7x16_add_s_wasm[] = TERNARY_OP_WASM(0x113);
+void test_i32x4_relaxed_dot_i8x16_i7x16_add_s() {
+    // a (i8x16): [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    // b (i7x16): [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8]
+    // c (i32x4): [100, 200, 300, 400]
+    wah_v128_t a = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}};
+    wah_v128_t b = {{0x01, 0x7F, 0x02, 0x7E, 0x03, 0x7D, 0x04, 0x7C, 0x05, 0x7B, 0x06, 0x7A, 0x07, 0x79, 0x08, 0x78}};
+    wah_v128_t c = { .i32 = {100, 200, 300, 400} };
+
+    // Intermediate dot product results (i16x8) from previous test:
+    // [-1, -2, -3, -4, -5, -6, -7, -8]
+    // Extended to i32 and added to c:
+    // Lane 0: c.i32[0] + (a.i8[0]*b.i7[0] + a.i8[1]*b.i7[1] + a.i8[2]*b.i7[2] + a.i8[3]*b.i7[3])
+    //         100 + (1*1 + 2*-1 + 3*2 + 4*-2) = 100 + (1 - 2 + 6 - 8) = 100 - 3 = 97
+    // Lane 1: c.i32[1] + (a.i8[4]*b.i7[4] + a.i8[5]*b.i7[5] + a.i8[6]*b.i7[6] + a.i8[7]*b.i7[7])
+    //         200 + (5*3 + 6*-3 + 7*4 + 8*-4) = 200 + (15 - 18 + 28 - 32) = 200 - 7 = 193
+    // Lane 2: c.i32[2] + (a.i8[8]*b.i7[8] + a.i8[9]*b.i7[9] + a.i8[10]*b.i7[10] + a.i8[11]*b.i7[11])
+    //         300 + (9*5 + 10*-5 + 11*6 + 12*-6) = 300 + (45 - 50 + 66 - 72) = 300 - 11 = 289
+    // Lane 3: c.i32[3] + (a.i8[12]*b.i7[12] + a.i8[13]*b.i7[13] + a.i8[14]*b.i7[14] + a.i8[15]*b.i7[15])
+    //         400 + (13*7 + 14*-7 + 15*8 + 16*-8) = 400 + (91 - 98 + 120 - 128) = 400 - 15 = 385
+    wah_v128_t expected = { .i32 = {97, 193, 289, 385} };
+
+    if (run_simd_ternary_op_test("i32x4.relaxed_dot_i8x16_i7x16_add_s", i32x4_relaxed_dot_i8x16_i7x16_add_s_wasm, &a, &b, &c, &expected) != WAH_OK) { exit(1); }
+
+    // Test with zero accumulator
+    c = (wah_v128_t){ .i32 = {0, 0, 0, 0} };
+    expected = (wah_v128_t){ .i32 = {-3, -7, -11, -15} };
+    if (run_simd_ternary_op_test("i32x4.relaxed_dot_i8x16_i7x16_add_s (zero acc)", i32x4_relaxed_dot_i8x16_i7x16_add_s_wasm, &a, &b, &c, &expected) != WAH_OK) { exit(1); }
+}
+
 int main() {
     test_v128_const();
     test_v128_load_store();
@@ -1950,6 +2123,20 @@ int main() {
     test_f32x4_min();
     test_f64x2_neg();
     test_f64x2_sqrt();
+    test_f32x4_pmax_nan_handling();
+
+    // Relaxed SIMD operations
+    test_i8x16_relaxed_swizzle();
+    test_i32x4_relaxed_trunc_f32x4_s();
+    test_i32x4_relaxed_trunc_f32x4_u();
+    test_f32x4_relaxed_madd();
+    test_f32x4_relaxed_madd_determinism();
+    test_i8x16_relaxed_laneselect();
+    test_f32x4_relaxed_min();
+    test_i16x8_relaxed_q15mulr_s();
+    test_i16x8_relaxed_dot_i8x16_i7x16_s();
+    test_i32x4_relaxed_dot_i8x16_i7x16_add_s();
 
     return 0;
 }
+
