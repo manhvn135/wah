@@ -22,6 +22,7 @@ typedef enum {
     WAH_ERROR_MEMORY_OUT_OF_BOUNDS,
     WAH_ERROR_NOT_FOUND,
     WAH_ERROR_MISUSE,
+    WAH_OK_BUT_MULTI_RETURN,
 } wah_error_t;
 
 // 128-bit vector type
@@ -155,6 +156,9 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx);
 
 // The main entry point to call a WebAssembly function.
 wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
+
+// Entry point to call a WebAssembly function with multiple return values.
+wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *results, uint32_t max_results, uint32_t *actual_results);
 
 // --- Module Cleanup ---
 void wah_free_module(wah_module_t *module);
@@ -681,6 +685,7 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_MEMORY_OUT_OF_BOUNDS: return "Memory access out of bounds";
         case WAH_ERROR_NOT_FOUND: return "Item not found";
         case WAH_ERROR_MISUSE: return "API misused: invalid arguments";
+        case WAH_OK_BUT_MULTI_RETURN: return "Function succeeded but returned multiple values (only first value available)";
         default: return "Unknown error";
     }
 }
@@ -1330,7 +1335,6 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         // Parse result types
         uint32_t result_count_type;
         WAH_CHECK(wah_decode_uleb128(ptr, section_end, &result_count_type));
-        WAH_ENSURE(result_count_type <= 1, WAH_ERROR_VALIDATION_FAILED);
 
         module->types[i].result_count = result_count_type;
         WAH_MALLOC_ARRAY(module->types[i].result_types, result_count_type);
@@ -1881,9 +1885,13 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 }
             }
 
-            // Pop params
-            for (int32_t i = bt->param_count - 1; i >= 0; --i) {
-                WAH_CHECK(wah_validation_pop_and_match_type(vctx, bt->param_types[i]));
+            // Check params are available on stack (but don't consume them for block type)
+            // Block type parameters are inputs to the block, not consumed by block declaration
+            WAH_ENSURE(vctx->current_stack_depth >= bt->param_count, WAH_ERROR_VALIDATION_FAILED);
+            for (uint32_t i = 0; i < bt->param_count; ++i) {
+                // Peek at the type without popping: stack[sp - param_count + i]
+                wah_type_t actual_type = vctx->type_stack.data[vctx->type_stack.sp - bt->param_count + i];
+                WAH_CHECK(wah_validate_type_match(actual_type, bt->param_types[i]));
             }
 
             frame->type_stack_sp = vctx->type_stack.sp;
@@ -1916,9 +1924,12 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 // The stack should contain exactly the function's result types.
                 if (vctx->func_type->result_count == 0) {
                     WAH_ENSURE(vctx->type_stack.sp == 0, WAH_ERROR_VALIDATION_FAILED);
-                } else { // result_count == 1
-                    WAH_ENSURE(vctx->type_stack.sp == 1, WAH_ERROR_VALIDATION_FAILED);
-                    WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->func_type->result_types[0]));
+                } else { // handle multi-results
+                    WAH_ENSURE(vctx->type_stack.sp == vctx->func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
+                    // Pop and match each result type in reverse order
+                    for (int32_t j = vctx->func_type->result_count - 1; j >= 0; --j) {
+                        WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->func_type->result_types[j]));
+                    }
                 }
                 // Reset unreachable state for the function's end
                 vctx->is_unreachable = false;
@@ -2152,10 +2163,12 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
                  if (vctx.control_sp == 0) { // End of function
                     if (vctx.func_type->result_count == 0) {
                         WAH_ENSURE_GOTO(vctx.type_stack.sp == 0, WAH_ERROR_VALIDATION_FAILED, cleanup); // Unmatched control frames
-                    } else { // result_count == 1
+                    } else { // handle multi-results
                         // If unreachable, the stack is polymorphic, so we don't strictly check sp.
                         // We still pop to ensure the conceptual stack height is correct.
-                        WAH_CHECK_GOTO(wah_validation_pop_and_match_type(&vctx, vctx.func_type->result_types[0]), cleanup);
+                        for (int32_t j = vctx.func_type->result_count - 1; j >= 0; --j) {
+                            WAH_CHECK_GOTO(wah_validation_pop_and_match_type(&vctx, vctx.func_type->result_types[j]), cleanup);
+                        }
                     }
                     break; // End of validation loop
                 }
@@ -4838,12 +4851,71 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, u
     // Run the main interpreter loop
     WAH_CHECK(wah_run_interpreter(exec_ctx));
 
-    // After execution, if a result is expected, it's on top of the stack.
-    if (result && func_type->result_count > 0) {
-        // Check if the stack has any value to pop. It might be empty if the function trapped before returning a value.
-        if (exec_ctx->sp > 0) {
+    // After execution, handle results based on function return count
+    if (func_type->result_count == 0) {
+        // Zero return function - zeroize result for safety
+        if (result) {
+            memset(result, 0, sizeof(wah_value_t));
+        }
+        return WAH_OK;
+    } else if (func_type->result_count == 1) {
+        // Single return function - normal behavior
+        if (result && exec_ctx->sp > 0) {
             *result = exec_ctx->value_stack[exec_ctx->sp - 1];
         }
+        return WAH_OK;
+    } else {
+        // Multiple return function - return first value with special status
+        if (result && exec_ctx->sp >= func_type->result_count) {
+            *result = exec_ctx->value_stack[exec_ctx->sp - func_type->result_count];
+        } else if (result) {
+            memset(result, 0, sizeof(wah_value_t));
+        }
+        return WAH_OK_BUT_MULTI_RETURN;
+    }
+}
+
+wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *results, uint32_t max_results, uint32_t *actual_results) {
+    WAH_ENSURE(func_idx < module->function_count, WAH_ERROR_UNKNOWN_SECTION);
+
+    const wah_func_type_t *func_type = &module->types[module->function_type_indices[func_idx]];
+    WAH_ENSURE(param_count == func_type->param_count, WAH_ERROR_VALIDATION_FAILED);
+    WAH_ENSURE(max_results >= func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
+
+    // Push initial params onto the value stack
+    for (uint32_t i = 0; i < param_count; ++i) {
+        WAH_ENSURE(exec_ctx->sp < exec_ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW); // Value stack overflow
+        exec_ctx->value_stack[exec_ctx->sp++] = params[i];
+    }
+
+    // Push the first frame. Locals offset is the current stack pointer before parameters.
+    WAH_CHECK(wah_push_frame(exec_ctx, func_idx, exec_ctx->sp - func_type->param_count));
+
+    // Reserve space for the function's own locals and initialize them to zero
+    uint32_t num_locals = exec_ctx->call_stack[0].code->local_count;
+    if (num_locals > 0) {
+        WAH_ENSURE(exec_ctx->sp + num_locals <= exec_ctx->value_stack_capacity, WAH_ERROR_OUT_OF_MEMORY);
+        memset(&exec_ctx->value_stack[exec_ctx->sp], 0, sizeof(wah_value_t) * num_locals);
+        exec_ctx->sp += num_locals;
+    }
+
+    // Run the main interpreter loop
+    WAH_CHECK(wah_run_interpreter(exec_ctx));
+
+    // After execution, copy multiple results from the stack
+    if (results && func_type->result_count > 0) {
+        // Check if the stack has enough values to pop
+        if (exec_ctx->sp >= func_type->result_count) {
+            // Copy results in reverse order (last result is on top of stack)
+            for (uint32_t i = 0; i < func_type->result_count; ++i) {
+                results[i] = exec_ctx->value_stack[exec_ctx->sp - func_type->result_count + i];
+            }
+            *actual_results = func_type->result_count;
+        } else {
+            *actual_results = 0;
+        }
+    } else {
+        *actual_results = 0;
     }
 
     return WAH_OK;

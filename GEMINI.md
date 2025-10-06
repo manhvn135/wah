@@ -36,6 +36,7 @@ All public API functions return a `wah_error_t` enum value. `WAH_OK` indicates s
 - Platform-specific intrinsics (`__builtin_popcount`, `_BitScanReverse`, etc.) are used for performance where available, with generic fallbacks.
 - **Manual WASM Binary Creation:** When manually crafting WASM binaries (without tools like `wat2wasm`), extreme care must be taken with section size calculations. Always double-check that the initial size numbers are correct. During testing, explicitly verify that the result code is *not* `WAH_ERROR_UNEXPECTED_EOF` to catch early errors related to incorrect section sizing.
 - **Numeric Overflow Checks:** During arithmetic operations inside parsing (e.g., addition, multiplication), it is crucial to explicitly check for potential numeric overflows. If an overflow occurs, it must be reported using the `WAH_ERROR_TOO_LARGE` error code to indicate that the result exceeds the representable range. Note that this doesn't apply to runtime numeric operations which assume 2's complements.
+- **Emoji Prohibition:** All source files and test files must strictly avoid emoji usage. Use text-based markers instead to ensure consistent display across different environments.
 
 ### Testing
 
@@ -46,4 +47,5 @@ All public API functions return a `wah_error_t` enum value. `WAH_OK` indicates s
   - Similarly, `WAH_CHECK` and similar macros will automatically output the failure location and error codes using `WAH_LOG` when `WAH_DEBUG` is active.
   - For debugging logs, it is best to use `WAH_LOG` exclusively due to the aforementioned reasons. In particular do not expand `WAH_CHECK` for logging.
 - Strive to use an existing test file for new test cases. Introduce a new file only when a new major category is warranted.
+- **Exit Code Requirements:** All test binaries must return exit code 0 only when all tests pass. Any test failure must result in a non-zero exit code to ensure proper test suite integration.
 - **IMPORTANT:** Any new bug should introduce a failing regression test that still does compile, so that the fix is demonstrated to reliably make it pass. Do not code the fix first!
