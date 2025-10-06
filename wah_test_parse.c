@@ -422,6 +422,87 @@ static int test_datacount_no_data_section() {
     return 0;
 }
 
+// Test case for END opcode not at the end of function body.
+// According to WASM spec, END (0x0b) must be the very last opcode in a function body.
+static int test_end_opcode_not_at_end() {
+    printf("Running test_end_opcode_not_at_end...\n");
+
+    // WASM binary with END opcode followed by additional bytes
+    const uint8_t wasm_binary_end_with_extra[] = {
+        0x00, 0x61, 0x73, 0x6d, // Magic
+        0x01, 0x00, 0x00, 0x00, // Version
+
+        // Type section (1)
+        0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // (func) -> ()
+
+        // Function section (3)
+        0x03, 0x02, 0x01, 0x00, // func 0 uses type 0
+
+        // Code section (10)
+        0x0a, 0x07, 0x01, // Section ID, size, count
+        0x05, // Code body size for func 0
+        0x00, // 0 locals
+        0x01, // nop opcode
+        0x0b, // END opcode (not at end)
+        0x41, 0x00, // i32.const 0 (extra byte after END)
+    };
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    wah_error_t err = wah_parse_module(wasm_binary_end_with_extra, sizeof(wasm_binary_end_with_extra), &module);
+
+    // This should fail validation because END is not the last opcode
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_end_opcode_not_at_end FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: END opcode not at end correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for multiple END opcodes in function body.
+// This should also fail validation.
+static int test_multiple_end_opcodes() {
+    printf("Running test_multiple_end_opcodes...\n");
+
+    // WASM binary with multiple END opcodes
+    const uint8_t wasm_binary_multiple_end[] = {
+        0x00, 0x61, 0x73, 0x6d, // Magic
+        0x01, 0x00, 0x00, 0x00, // Version
+
+        // Type section (1)
+        0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // (func) -> ()
+
+        // Function section (3)
+        0x03, 0x02, 0x01, 0x00, // func 0 uses type 0
+
+        // Code section (10)
+        0x0a, 0x05, 0x01, // Section ID, size, count
+        0x03, // Code body size for func 0 (locals + 2 END opcodes)
+        0x00, // 0 locals
+        0x0b, // First END opcode
+        0x0b, // Second END opcode (extra)
+    };
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    wah_error_t err = wah_parse_module(wasm_binary_multiple_end, sizeof(wasm_binary_multiple_end), &module);
+
+    // This should fail validation because there are multiple END opcodes
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_multiple_end_opcodes FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: Multiple END opcodes correctly failed validation.\n");
+    return 0;
+}
+
 // Regression tests for soft "hang" test cases found by fuzzers.
 static int test_all_hang_wasm_parsing_errors() {
     printf("Running test_all_hang_wasm_parsing_errors...\n");
@@ -498,6 +579,8 @@ int main(void) {
     result |= test_deferred_data_validation_failure();
     result |= test_unused_opcode_validation_failure();
     result |= test_datacount_no_data_section();
+    result |= test_end_opcode_not_at_end();
+    result |= test_multiple_end_opcodes();
     result |= test_malformed_code_body_size_wasm();
     result |= test_all_hang_wasm_parsing_errors();
 

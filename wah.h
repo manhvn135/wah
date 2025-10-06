@@ -2206,6 +2206,8 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
                             WAH_CHECK_GOTO(wah_validation_pop_and_match_type(&vctx, vctx.func_type->result_types[j]), cleanup);
                         }
                     }
+                    // END opcode must be the very last byte in function body
+                    WAH_ENSURE_GOTO(code_ptr_validation == validation_end, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     break; // End of validation loop
                 }
             }
