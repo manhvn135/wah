@@ -1253,6 +1253,19 @@ static inline double wah_pmax(double a, double b) {
     return fmax(a, b);
 }
 
+// Helper function for Q15 multiplication with rounding and saturation
+static inline wah_v128_t wah_q15mulr_sat_s(wah_v128_t a, wah_v128_t b) {
+    wah_v128_t result;
+    for (int i = 0; i < 8; ++i) {
+        int32_t prod = (int32_t)a.i16[i] * b.i16[i];
+        int32_t res = (prod + 16384) >> 15; // Rounding and shift
+        if (res > 32767) res = 32767;
+        if (res < -32768) res = -32768;
+        result.i16[i] = (int16_t)res;
+    }
+    return result;
+}
+
 static inline wah_error_t wah_type_stack_push(wah_type_stack_t *stack, wah_type_t type) {
     WAH_ENSURE(stack->sp < WAH_MAX_TYPE_STACK_SIZE, WAH_ERROR_VALIDATION_FAILED);
     stack->data[stack->sp++] = type;
@@ -4494,16 +4507,10 @@ WAH_RUN(I16X8_EXTADD_PAIRWISE_I8X16_U) {
 }
 WAH_RUN(I16X8_ABS) V128_ABS_OP(16, i16, abs)
 WAH_RUN(I16X8_NEG) V128_UNARY_OP_LANE(16, -, i16)
+
 WAH_RUN(I16X8_Q15MULR_SAT_S) {
     wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
-    for (int i = 0; i < 8; ++i) {
-        int32_t prod = (int32_t)a.i16[i] * b.i16[i];
-        int32_t res = (prod + 16384) >> 15; // Rounding and shift
-        if (res > 32767) res = 32767;
-        if (res < -32768) res = -32768;
-        a.i16[i] = (int16_t)res;
-    }
-    VSTACK_V128_A = a;
+    VSTACK_V128_A = wah_q15mulr_sat_s(a, b);
     ctx->sp--;
     WAH_NEXT();
 }
@@ -4818,14 +4825,7 @@ WAH_RUN(F64X2_RELAXED_MAX) V128_BINARY_OP_LANE_FN(64, fmax, f64)
 
 WAH_RUN(I16X8_RELAXED_Q15MULR_S) {
     wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
-    for (int i = 0; i < 8; ++i) {
-        int32_t prod = (int32_t)a.i16[i] * b.i16[i];
-        int32_t res = (prod + 16384) >> 15; // Rounding and shift
-        if (res > 32767) res = 32767;
-        if (res < -32768) res = -32768;
-        a.i16[i] = (int16_t)res;
-    }
-    VSTACK_V128_A = a;
+    VSTACK_V128_A = wah_q15mulr_sat_s(a, b);
     ctx->sp--;
     WAH_NEXT();
 }
