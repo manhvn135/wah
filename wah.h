@@ -45,6 +45,8 @@ typedef union {
     float f32;
     double f64;
     wah_v128_t v128;
+    void* externref;
+    uint32_t funcref;
 } wah_value_t;
 
 typedef int32_t wah_type_t;
@@ -54,11 +56,15 @@ typedef int32_t wah_type_t;
 #define WAH_TYPE_F32 -3
 #define WAH_TYPE_F64 -4
 #define WAH_TYPE_V128 -5
+#define WAH_TYPE_FUNCREF -16
+#define WAH_TYPE_EXTERNREF -17
 
 #define WAH_TYPE_IS_FUNCTION(t) ((t) == -100)
 #define WAH_TYPE_IS_MEMORY(t)   ((t) == -200)
 #define WAH_TYPE_IS_TABLE(t)    ((t) == -300)
 #define WAH_TYPE_IS_GLOBAL(t)   ((t) >= -5)
+#define WAH_TYPE_IS_FUNCREF(t)  ((t) == WAH_TYPE_FUNCREF)
+#define WAH_TYPE_IS_EXTERNREF(t) ((t) == WAH_TYPE_EXTERNREF)
 
 typedef uint64_t wah_entry_id_t;
 
@@ -248,7 +254,6 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #define WAH_TYPE_MEMORY   -200
 #define WAH_TYPE_TABLE    -300
 
-#define WAH_TYPE_FUNCREF WAH_TYPE_FUNCTION
 #define WAH_TYPE_ANY -99
 
 #define WAH_ENTRY_KIND_FUNCTION 0
@@ -443,7 +448,10 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
     X(I32_TRUNC_SAT_F32_S, WAH_FC+0x00) X(I32_TRUNC_SAT_F32_U, WAH_FC+0x01) \
     X(I32_TRUNC_SAT_F64_S, WAH_FC+0x02) X(I32_TRUNC_SAT_F64_U, WAH_FC+0x03) \
     X(I64_TRUNC_SAT_F32_S, WAH_FC+0x04) X(I64_TRUNC_SAT_F32_U, WAH_FC+0x05) \
-    X(I64_TRUNC_SAT_F64_S, WAH_FC+0x06) X(I64_TRUNC_SAT_F64_U, WAH_FC+0x07)
+    X(I64_TRUNC_SAT_F64_S, WAH_FC+0x06) X(I64_TRUNC_SAT_F64_U, WAH_FC+0x07) \
+    \
+    /* Reference Types */ \
+    X(REF_NULL, 0xD0) X(REF_IS_NULL, 0xD1) X(REF_FUNC, 0xD2)
 
 typedef enum {
 #define WAH_OPCODE_INIT(name, val) WAH_OP_##name = val,
@@ -2086,6 +2094,34 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             vctx->is_unreachable = true; // After return, the current path becomes unreachable
             return WAH_OK;
 
+        case WAH_OP_REF_NULL: {
+            // Read ref type from original bytecode (validation happens before preparsing)
+            wah_type_t ref_type;
+            WAH_CHECK(wah_decode_ref_type(code_ptr, code_end, &ref_type));
+
+            // Push null reference
+            WAH_CHECK(wah_validation_push_type(vctx, ref_type));
+            break;
+        }
+
+        case WAH_OP_REF_IS_NULL: {
+            // Pop reference, push i32 result
+            wah_type_t ref_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &ref_type));
+            WAH_ENSURE(ref_type == WAH_TYPE_FUNCREF || ref_type == WAH_TYPE_EXTERNREF, WAH_ERROR_VALIDATION_FAILED);
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_I32));
+            break;
+        }
+
+        case WAH_OP_REF_FUNC: {
+            // Read function index from bytecode
+            uint32_t func_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &func_idx));
+            WAH_ENSURE(func_idx < vctx->module->function_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_FUNCREF));
+            break;
+        }
+
         default:
             return WAH_ERROR_VALIDATION_FAILED;
     }
@@ -2343,7 +2379,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
 
 static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     wah_error_t err = WAH_OK;
-    uint32_t count;
+    uint32_t count = 0;
     // An export entry requires at least 3 bytes (name_len, kind, index).
     WAH_CHECK_GOTO(wah_decode_and_validate_count(ptr, section_end, &count, 3), cleanup);
 
@@ -2711,6 +2747,24 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 preparsed_instr_size += sizeof(uint32_t) * 2; // For dest_mem_idx and src_mem_idx
                 break;
             }
+
+            case WAH_OP_REF_NULL: {
+                wah_type_t ref_type;
+                WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type), cleanup);
+                preparsed_instr_size += sizeof(uint32_t); // For type (converted to uint32_t)
+                break;
+            }
+
+            case WAH_OP_REF_FUNC: {
+                uint32_t func_idx;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &func_idx), cleanup);
+                preparsed_instr_size += sizeof(uint32_t); // For function index
+                break;
+            }
+
+            // REF_IS_NULL has no immediate operands
+            case WAH_OP_REF_IS_NULL:
+                break;
         }
         preparsed_size += preparsed_instr_size;
         ptr = instr_ptr + (ptr - instr_ptr); // This is not a bug; it's to make it clear that ptr is advanced inside the switch
@@ -2894,6 +2948,27 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 write_ptr += sizeof(uint32_t);
                 break;
             }
+
+            case WAH_OP_REF_NULL: {
+                wah_type_t ref_type;
+                WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type), cleanup);
+                // ref_type is already converted to WAH_TYPE_FUNCREF (-16) or WAH_TYPE_EXTERNREF (-17)
+                wah_write_u32_le(write_ptr, (uint32_t)ref_type);
+                write_ptr += sizeof(uint32_t);
+                break;
+            }
+
+            case WAH_OP_REF_FUNC: {
+                uint32_t func_idx;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &func_idx), cleanup);
+                wah_write_u32_le(write_ptr, func_idx);
+                write_ptr += sizeof(uint32_t);
+                break;
+            }
+
+            // REF_IS_NULL has no immediate operands
+            case WAH_OP_REF_IS_NULL:
+                break;
         }
         ptr = saved_ptr + (ptr - saved_ptr);
     }
@@ -2952,6 +3027,8 @@ static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, 
         case 0x7D: *out_type = WAH_TYPE_F32; return WAH_OK;
         case 0x7C: *out_type = WAH_TYPE_F64; return WAH_OK;
         case 0x7B: *out_type = WAH_TYPE_V128; return WAH_OK;
+        case 0x70: *out_type = WAH_TYPE_FUNCREF; return WAH_OK;
+        case 0x6F: *out_type = WAH_TYPE_EXTERNREF; return WAH_OK;
         default: return WAH_ERROR_VALIDATION_FAILED; // Unknown value type
     }
 }
@@ -2962,6 +3039,7 @@ static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, 
     uint8_t byte = *(*ptr)++;
     switch (byte) {
         case 0x70: *out_type = WAH_TYPE_FUNCREF; return WAH_OK;
+        case 0x6F: *out_type = WAH_TYPE_EXTERNREF; return WAH_OK;
         default: return WAH_ERROR_VALIDATION_FAILED; // Unknown value type
     }
 }
@@ -3335,6 +3413,47 @@ WAH_RUN(F64_CONST) { ctx->value_stack[ctx->sp++].f64 = wah_read_f64_le(bytecode_
 WAH_RUN(V128_CONST) {
     memcpy(&ctx->value_stack[ctx->sp++].v128, bytecode_ip, sizeof(wah_v128_t));
     bytecode_ip += sizeof(wah_v128_t);
+    WAH_NEXT();
+}
+
+WAH_RUN(REF_NULL) {
+    // Read type from bytecode (already parsed as uint32_t)
+    uint32_t type = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+
+    // Initialize null reference based on type
+    switch ((int32_t)type) {
+        case WAH_TYPE_FUNCREF:
+            ctx->value_stack[ctx->sp++].funcref = 0;
+            break;
+        case WAH_TYPE_EXTERNREF:
+            ctx->value_stack[ctx->sp++].externref = NULL;
+            break;
+        default:
+            return WAH_ERROR_VALIDATION_FAILED;
+    }
+    WAH_NEXT();
+}
+
+WAH_RUN(REF_IS_NULL) {
+    wah_value_t ref_val = ctx->value_stack[--ctx->sp];
+
+    // Determine if reference is null based on type
+    // For now, we'll check both funcref and externref
+    // In a complete implementation, we'd need to track the actual type of each stack value
+    int32_t is_null = (ref_val.funcref == 0) && (ref_val.externref == NULL);
+
+    ctx->value_stack[ctx->sp++].i32 = is_null;
+    WAH_NEXT();
+}
+
+WAH_RUN(REF_FUNC) {
+    // Read function index from bytecode (already parsed as uint32_t)
+    uint32_t func_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+
+    // Push function reference (function index)
+    ctx->value_stack[ctx->sp++].funcref = func_idx;
     WAH_NEXT();
 }
 

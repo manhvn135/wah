@@ -4,17 +4,19 @@ This project implements a WebAssembly (WASM) interpreter entirely within a singl
 
 ## Implementation Strategy
 
-The WAH interpreter employs a two-pass approach for efficient WebAssembly module execution:
+The WAH interpreter employs a multi-phase approach for efficient WebAssembly module execution:
 
-1. **Pre-parsing:** After initial parsing of the WASM binary, the bytecode for each function undergoes a two-pass "pre-parsing" phase (`wah_preparse_code`) to optimize it for interpretation.
+1. **Validation:** After initial parsing of the WASM binary structure (sections, types, functions, etc.), each function's bytecode undergoes validation (`wah_validate_opcode`) to ensure type safety, stack discipline, and instruction validity. This step checks that instructions have correct types, control flow is well-formed, and the module conforms to WebAssembly specification requirements.
+
+2. **Pre-parsing:** After validation passes, the bytecode for each function undergoes a two-pass "pre-parsing" phase (`wah_preparse_code`) to optimize it for interpretation.
 
    - **Pass 1: Analysis and Layout.** This pass scans the raw WASM bytecode to calculate the final size of the optimized code and resolve all jump targets. It identifies control flow blocks (`block`, `loop`, `if`, `else`). For backward-branching `loop` blocks, the jump target is their own starting instruction, which is recorded immediately. For forward-branching `block` and `if` blocks, the jump target is the location of their corresponding `end` instruction (or `else` for an `if`). These forward-jump targets are resolved and recorded only when the `else` or `end` instruction is encountered during the scan. This pass effectively lays out the structure of the final code and resolves all jump destinations before the second pass begins.
 
    - **Pass 2: Code Generation.** This pass generates the final, optimized bytecode. It iterates through the raw WASM code again, emitting a new stream of instructions. Variable-length LEB128 encoded arguments are decoded and replaced with fixed-size native types (e.g., `uint32_t`). Branch instructions (`br`, `br_if`, `br_table`) are written with the pre-calculated absolute jump offsets from Pass 1. Structural opcodes like `block`, `loop`, and `end` (except for the final one) are removed entirely, as their control flow logic is now embedded directly into the jump offsets of the branch instructions. This process eliminates the need for runtime LEB128 decoding and complex control flow resolution, significantly speeding up interpretation.
 
-2. **Custom Call Stack:** Unlike traditional compiled code that relies on the host system's call stack, WAH implements its own explicit call stack (`wah_call_frame_t` within `wah_exec_context_t`). This custom stack manages function call frames, instruction pointers, and local variable offsets. This design choice ensures portability across different environments and provides fine-grained control over the execution state, preventing host stack overflow issues and enabling features like stack inspection if needed.
+3. **Custom Call Stack:** Unlike traditional compiled code that relies on the host system's call stack, WAH implements its own explicit call stack (`wah_call_frame_t` within `wah_exec_context_t`). This custom stack manages function call frames, instruction pointers, and local variable offsets. This design choice ensures portability across different environments and provides fine-grained control over the execution state, preventing host stack overflow issues and enabling features like stack inspection if needed.
 
-3. **Interpreter Dispatch Strategy:** The WAH interpreter supports two main dispatch strategies for executing pre-parsed bytecode, controlled by the `WAH_USE_MUSTTAIL` macro:
+4. **Interpreter Dispatch Strategy:** The WAH interpreter supports three main dispatch strategies for executing pre-parsed bytecode, controlled by the `WAH_USE_MUSTTAIL` macro:
 
    - **Switch-based Interpreter:** This traditional approach uses a central `while` loop that fetches each opcode and dispatches to a large `switch` statement. Each `case` within the `switch` handles a specific opcode's logic. While straightforward to implement, it can incur overhead from branch prediction misses and the `switch` statement itself.
 
